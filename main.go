@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+type ServerContext struct {
+	peersList     []Peer
+	peersListLock sync.RWMutex
+}
+
 type Peer struct {
 	id   int
 	conn net.Conn
@@ -41,20 +46,6 @@ const (
 	listPeersRID = 2
 )
 
-var peersList []Peer
-var peersListLock sync.RWMutex
-var idCounter int = 0
-var idCounterLock sync.Mutex
-
-func genNewID() int {
-	var newid int
-	idCounterLock.Lock()
-	idCounter++
-	newid = idCounter
-	idCounterLock.Unlock()
-	return newid
-}
-
 func peerSliceIndexOf(s []Peer, id int) int {
 	i := 0
 	var p Peer
@@ -71,15 +62,15 @@ func peerSliceRemove(s *[]Peer, i int) {
 	*s = (*s)[:len(*s)-1]
 }
 
-func handleDisconnection(id int) {
-	peersListLock.Lock()
-	p := peersList[peerSliceIndexOf(peersList, id)]
+func handleDisconnection(srvCtx *ServerContext, id int) {
+	srvCtx.peersListLock.Lock()
+	p := srvCtx.peersList[peerSliceIndexOf(srvCtx.peersList, id)]
 	log.Printf("[Server] %s disconnected\n", p.conn.RemoteAddr())
-	peerSliceRemove(&peersList, peerSliceIndexOf(peersList, id))
-	peersListLock.Unlock()
+	peerSliceRemove(&srvCtx.peersList, peerSliceIndexOf(srvCtx.peersList, id))
+	srvCtx.peersListLock.Unlock()
 }
 
-func handlePeer(p Peer) {
+func handlePeer(srvCtx *ServerContext, p Peer) {
 	br := bufio.NewReader(p.conn)
 	bw := bufio.NewWriter(p.conn)
 
@@ -87,7 +78,7 @@ func handlePeer(p Peer) {
 		reqBytes, err := br.ReadBytes('\n')
 
 		if err == io.EOF {
-			handleDisconnection(p.id)
+			handleDisconnection(srvCtx, p.id)
 			break
 		} else if err != nil {
 			log.Println(err)
@@ -105,9 +96,9 @@ func handlePeer(p Peer) {
 		var resBytes []byte
 
 		if operationCode == echoRID {
-			resBytes, err = handleEcho(reqJsonBytes)
+			resBytes, err = handleEcho(srvCtx, reqJsonBytes)
 		} else if operationCode == listPeersRID {
-			resBytes, err = handleListPeers(reqJsonBytes)
+			resBytes, err = handleListPeers(srvCtx, reqJsonBytes)
 		}
 
 		if err != nil {
@@ -131,7 +122,7 @@ func handlePeer(p Peer) {
 	}
 }
 
-func handleEcho(reqBytes []byte) (resBytes []byte, err error) {
+func handleEcho(_ *ServerContext, reqBytes []byte) (resBytes []byte, err error) {
 	var echoReq EchoRequest
 	err = json.Unmarshal(reqBytes, &echoReq)
 
@@ -149,7 +140,7 @@ func handleEcho(reqBytes []byte) (resBytes []byte, err error) {
 	return resBytes, nil
 }
 
-func handleListPeers(reqBytes []byte) (resBytes []byte, err error) {
+func handleListPeers(srvCtx *ServerContext, reqBytes []byte) (resBytes []byte, err error) {
 	// For the sake of conciseness -> currently unmarshalling empty slice to empty struct
 	var listPeersReq ListPeersRequest
 	err = json.Unmarshal(reqBytes, &listPeersReq)
@@ -158,10 +149,10 @@ func handleListPeers(reqBytes []byte) (resBytes []byte, err error) {
 		return nil, err
 	}
 
-	peersListLock.RLock()
-	peersFreeze := make([]Peer, len(peersList))
-	copy(peersFreeze, peersList)
-	peersListLock.RUnlock()
+	srvCtx.peersListLock.RLock()
+	peersFreeze := make([]Peer, len(srvCtx.peersList))
+	copy(peersFreeze, srvCtx.peersList)
+	srvCtx.peersListLock.RUnlock()
 	listPeersRes := ListPeersResponse{make([]PeerInfo, 0)}
 
 	for _, peer := range peersFreeze {
@@ -180,29 +171,29 @@ func handleListPeers(reqBytes []byte) (resBytes []byte, err error) {
 	return resBytes, nil
 }
 
-func printConnectedPeers() {
-	peersListLock.RLock()
+func printConnectedPeers(srvCtx *ServerContext) {
+	srvCtx.peersListLock.RLock()
 	log.Println("[Server] Displaying all connections:")
 
-	for _, p := range peersList {
+	for _, p := range srvCtx.peersList {
 		log.Printf("[Server] ID#%d: %s\n", p.id, p.conn.RemoteAddr())
 	}
 
-	peersListLock.RUnlock()
+	srvCtx.peersListLock.RUnlock()
 }
 
 func runServer() {
+	idCounter := 0
+	srvCtx := &ServerContext{peersList: make([]Peer, 0)}
 	ln, err := net.Listen("tcp", ":8080")
 
 	if err != nil {
 		log.Println(err)
 	}
 
-	peersList = make([]Peer, 0)
-
 	go func() {
 		for {
-			printConnectedPeers()
+			printConnectedPeers(srvCtx)
 			time.Sleep(time.Second * 5)
 		}
 	}()
@@ -216,11 +207,12 @@ func runServer() {
 		}
 
 		log.Printf("[Server] client connected %s\n", c.RemoteAddr())
-		peersListLock.Lock()
-		np := Peer{genNewID(), c}
-		peersList = append(peersList, np)
-		peersListLock.Unlock()
-		go handlePeer(np)
+		idCounter++
+		newPeer := Peer{idCounter, c}
+		srvCtx.peersListLock.Lock()
+		srvCtx.peersList = append(srvCtx.peersList, newPeer)
+		srvCtx.peersListLock.Unlock()
+		go handlePeer(srvCtx, newPeer)
 	}
 }
 
