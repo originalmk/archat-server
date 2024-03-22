@@ -9,11 +9,13 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Account struct {
 	nickname string
-	password string
+	passHash []byte
 }
 
 type ServerContext struct {
@@ -169,7 +171,6 @@ func handleEcho(_ *HandlerContext, reqBytes []byte) (resBytes []byte, err error)
 }
 
 func handleListPeers(handlerCtx *HandlerContext, reqBytes []byte) (resBytes []byte, err error) {
-	// For the sake of conciseness -> currently unmarshalling empty slice to empty struct
 	var listPeersReq ListPeersRequest
 	err = json.Unmarshal(reqBytes, &listPeersReq)
 
@@ -215,7 +216,7 @@ func handleAuth(handlerCtx *HandlerContext, reqBytes []byte) (resBytes []byte, e
 
 	if ok {
 		// Check if password matches
-		if authReq.Password == account.password {
+		if bcrypt.CompareHashAndPassword(account.passHash, []byte(authReq.Password)) == nil {
 			authRes = AuthResponse{true}
 			handlerCtx.srvCtx.peersListLock.Lock()
 			handlerCtx.peer.hasAccount = true
@@ -226,14 +227,20 @@ func handleAuth(handlerCtx *HandlerContext, reqBytes []byte) (resBytes []byte, e
 		}
 	} else {
 		authRes = AuthResponse{true}
-		newAcc := Account{authReq.Nickname, authReq.Password}
-		handlerCtx.srvCtx.accountsLock.Lock()
-		handlerCtx.srvCtx.accounts[newAcc.nickname] = &newAcc
-		handlerCtx.srvCtx.accountsLock.Unlock()
-		handlerCtx.srvCtx.peersListLock.Lock()
-		handlerCtx.peer.hasAccount = true
-		handlerCtx.peer.account = &newAcc
-		handlerCtx.srvCtx.peersListLock.Unlock()
+		passHash, err := bcrypt.GenerateFromPassword([]byte(authReq.Password), bcrypt.DefaultCost)
+
+		if err != nil {
+			authRes = AuthResponse{false}
+		} else {
+			newAcc := Account{authReq.Nickname, passHash}
+			handlerCtx.srvCtx.accountsLock.Lock()
+			handlerCtx.srvCtx.accounts[newAcc.nickname] = &newAcc
+			handlerCtx.srvCtx.accountsLock.Unlock()
+			handlerCtx.srvCtx.peersListLock.Lock()
+			handlerCtx.peer.hasAccount = true
+			handlerCtx.peer.account = &newAcc
+			handlerCtx.srvCtx.peersListLock.Unlock()
+		}
 	}
 
 	resBytes, err = json.Marshal(authRes)
@@ -265,7 +272,6 @@ func printConnectedPeers(srvCtx *ServerContext) {
 func runServer() {
 	idCounter := 0
 	srvCtx := &ServerContext{peersList: make([]*Peer, 0), accounts: make(map[string]*Account)}
-	srvCtx.accounts["xd"] = &Account{"xd", "XD"}
 	ln, err := net.Listen("tcp", ":8080")
 
 	if err != nil {
