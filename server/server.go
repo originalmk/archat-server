@@ -2,12 +2,13 @@ package server
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/bcrypt"
 	"krzyzanowski.dev/p2pchat/common"
@@ -39,6 +40,20 @@ type Peer struct {
 	account    *Account
 }
 
+var logger = log.NewWithOptions(os.Stdout, log.Options{
+	ReportTimestamp: true,
+	TimeFormat:      time.TimeOnly,
+	Prefix:          "⚙️  Server",
+})
+
+func init() {
+	if common.IsProd {
+		logger.SetLevel(log.InfoLevel)
+	} else {
+		logger.SetLevel(log.DebugLevel)
+	}
+}
+
 func NewPeer(conn *websocket.Conn) *Peer {
 	return &Peer{-1, conn, false, nil}
 }
@@ -67,13 +82,13 @@ func (srvCtx *ServerContext) removePeer(peer *Peer) {
 
 func handleDisconnection(handlerCtx *HandlerContext) {
 	handlerCtx.removePeer(handlerCtx.peer)
-	log.Printf("[Server] %s disconnected\n", handlerCtx.peer.conn.RemoteAddr())
+	logger.Infof("%s disconnected", handlerCtx.peer.conn.RemoteAddr())
 }
 
 func (hdlCtx *HandlerContext) handleEcho(reqFrame *common.RequestFrame) (res common.Response, err error) {
 	echoReq, err := common.RequestFromFrame[common.EchoRequest](*reqFrame)
 	if err != nil {
-		log.Println("[Server] could not read request from frame")
+		logger.Error("could not read request from frame")
 		return nil, err
 	}
 
@@ -85,7 +100,7 @@ func (hdlCtx *HandlerContext) handleListPeers(reqFrame *common.RequestFrame) (re
 	// Currently list peers request is empty, so we can ignore it - we won't use it
 	_, err = common.RequestFromFrame[common.ListPeersRequest](*reqFrame)
 	if err != nil {
-		log.Println("[Server] could not read request from frame")
+		logger.Error("could not read request from frame")
 		return nil, err
 	}
 
@@ -113,7 +128,7 @@ func (hdlCtx *HandlerContext) handleListPeers(reqFrame *common.RequestFrame) (re
 func (hdlCtx *HandlerContext) handleAuth(reqFrame *common.RequestFrame) (res common.Response, err error) {
 	authReq, err := common.RequestFromFrame[common.AuthRequest](*reqFrame)
 	if err != nil {
-		log.Println("[Server] could not read request from frame")
+		logger.Error("could not read request from frame")
 		return nil, err
 	}
 
@@ -157,7 +172,7 @@ func (hdlCtx *HandlerContext) handleAuth(reqFrame *common.RequestFrame) (res com
 
 func (srvCtx *ServerContext) printConnectedPeers() {
 	srvCtx.peersListLock.RLock()
-	log.Println("[Server] displaying all connections:")
+	logger.Debug("displaying all connections:")
 
 	for _, p := range srvCtx.peersList {
 		nick := "-"
@@ -166,17 +181,17 @@ func (srvCtx *ServerContext) printConnectedPeers() {
 			nick = p.account.nickname
 		}
 
-		log.Printf("[Server] ID#%d, Addr:%s, Auth:%t, Nick:%s\n", p.id, p.conn.RemoteAddr(), p.hasAccount, nick)
+		log.Debugf("ID#%d, Addr:%s, Auth:%t, Nick:%s", p.id, p.conn.RemoteAddr(), p.hasAccount, nick)
 	}
 
 	srvCtx.peersListLock.RUnlock()
 }
 
 func (hdlCtx *HandlerContext) handleRequest(reqJsonBytes []byte) error {
-	log.Printf("[Server] got message text: %s\n", strings.Trim(string(reqJsonBytes), "\n"))
+	logger.Debugf("got message text: %s", strings.Trim(string(reqJsonBytes), "\n"))
 	var reqFrame common.RequestFrame
 	json.Unmarshal(reqJsonBytes, &reqFrame)
-	log.Printf("[Server] unmarshalled request frame (ID=%d)\n", reqFrame.ID)
+	log.Debugf("unmarshalled request frame (ID=%d)", reqFrame.ID)
 	var res common.Response
 	var err error
 
@@ -189,26 +204,26 @@ func (hdlCtx *HandlerContext) handleRequest(reqJsonBytes []byte) error {
 	}
 
 	if err != nil {
-		log.Printf("[Server] could not handle request ID=%d\n", reqFrame.ID)
+		logger.Errorf("could not handle request ID=%d", reqFrame.ID)
 		return err
 	}
 
 	resFrame, err := common.ResponseFrameFrom(res)
 	if err != nil {
-		log.Println("[Server] could not create frame from response")
+		logger.Errorf("could not create frame from response")
 		return err
 	}
 
 	resJsonBytes, err := json.Marshal(resFrame)
 	if err != nil {
-		log.Println("[Server] error marshalling frame to json")
+		logger.Errorf("error marshalling frame to json")
 		return err
 	}
 
-	log.Printf("[Server] sending %s\n", string(resJsonBytes))
+	logger.Debugf("sending %s", string(resJsonBytes))
 	err = hdlCtx.peer.conn.WriteMessage(websocket.TextMessage, resJsonBytes)
 	if err != nil {
-		log.Println("[Server] error writing response frame")
+		logger.Errorf("error writing response frame")
 		return err
 	}
 
@@ -229,7 +244,7 @@ func (srvCtx *ServerContext) wsapiHandler(w http.ResponseWriter, r *http.Request
 	upgrader := websocket.Upgrader{}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println("[Server] upgrade failed")
+		logger.Errorf("upgrade failed")
 		return
 	}
 
@@ -238,7 +253,7 @@ func (srvCtx *ServerContext) wsapiHandler(w http.ResponseWriter, r *http.Request
 	handlerCtx := &HandlerContext{peer, srvCtx}
 	defer handleDisconnection(handlerCtx)
 	defer conn.Close()
-	log.Printf("[Server] %s connected\n", conn.RemoteAddr())
+	logger.Infof("%s connected", conn.RemoteAddr())
 
 	for {
 		messType, messBytes, err := conn.ReadMessage()
@@ -249,7 +264,7 @@ func (srvCtx *ServerContext) wsapiHandler(w http.ResponseWriter, r *http.Request
 		if messType != 1 {
 			err := conn.WriteMessage(websocket.CloseUnsupportedData, []byte("Only JSON text is supported"))
 			if err != nil {
-				log.Println("[Server] error sending close message due to unsupported data")
+				logger.Debugf("[Server] error sending close message due to unsupported data")
 			}
 
 			return
@@ -257,7 +272,7 @@ func (srvCtx *ServerContext) wsapiHandler(w http.ResponseWriter, r *http.Request
 
 		err = handlerCtx.handleRequest(messBytes)
 		if err != nil {
-			log.Println(err)
+			logger.Debug(err)
 			break
 		}
 	}
@@ -274,5 +289,6 @@ func RunServer() {
 	}()
 
 	http.HandleFunc("/wsapi", srvCtx.wsapiHandler)
+	logger.Info("Starting server...")
 	http.ListenAndServe(":8080", nil)
 }

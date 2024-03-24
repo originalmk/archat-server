@@ -8,6 +8,8 @@ import (
 	"krzyzanowski.dev/p2pchat/server"
 )
 
+const IsProd = false
+
 func main() {
 	args := os.Args[1:]
 

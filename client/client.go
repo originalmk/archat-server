@@ -1,100 +1,116 @@
 package client
 
 import (
-	"log"
 	"net/url"
+	"os"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"github.com/gorilla/websocket"
 	cm "krzyzanowski.dev/p2pchat/common"
 )
+
+var logger = log.NewWithOptions(os.Stdout, log.Options{
+	ReportTimestamp: true,
+	TimeFormat:      time.TimeOnly,
+	Prefix:          "👤 Client",
+})
+
+func init() {
+	if cm.IsProd {
+		logger.SetLevel(log.InfoLevel)
+	} else {
+		logger.SetLevel(log.DebugLevel)
+	}
+}
 
 func RunClient() {
 	u := url.URL{Scheme: "ws", Host: ":8080", Path: "/wsapi"}
 	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 
 	if err != nil {
-		log.Println("[Client] could not connect to websocket")
+		logger.Error("could not connect to websocket")
 		return
 	}
 
 	defer c.Close()
 
-	log.Println("[Client] authenticating...")
+	logger.Info("authenticating...")
 	rf, _ := cm.RequestFrameFrom(cm.AuthRequest{Nickname: "krzmaciek", Password: "9maciek1"})
 	err = c.WriteJSON(rf)
 	if err != nil {
-		log.Fatalln(err)
+		logger.Fatal(err)
 	}
 
 	var authResFrame cm.ResponseFrame
 	err = c.ReadJSON(&authResFrame)
 	if err != nil {
-		log.Fatalln(err)
+		logger.Fatal(err)
 	}
 
 	authRes, err := cm.ResponseFromFrame[cm.AuthResponse](authResFrame)
 	if err != nil {
-		log.Fatalln(err)
+		logger.Fatal(err)
 	}
 
-	log.Printf("[Client] authentication result: %t\n", authRes.IsSuccess)
+	logger.Infof("authentication result: %t", authRes.IsSuccess)
 	time.Sleep(time.Second * 1)
 
-	log.Println("[Client] sending echo...")
+	logger.Info("sending echo...")
 	echoByte := 123
 	rf, err = cm.RequestFrameFrom(cm.EchoRequest{EchoByte: byte(echoByte)})
 	if err != nil {
-		log.Fatalln(err)
+		logger.Fatal(err)
 	}
 
 	err = c.WriteJSON(rf)
 	if err != nil {
-		log.Fatalln(err)
+		logger.Fatal(err)
 	}
 
 	var echoResFrame cm.ResponseFrame
 	err = c.ReadJSON(&echoResFrame)
 	if err != nil {
-		log.Fatalln(err)
+		logger.Fatal(err)
 	}
 
 	echoRes, err := cm.ResponseFromFrame[cm.EchoResponse](echoResFrame)
 	if err != nil {
-		log.Fatalln(err)
+		logger.Fatal(err)
 	}
 
-	log.Printf("[Client] sent echo of %d, got %d in return\n", echoByte, echoRes.EchoByte)
+	logger.Infof("sent echo of %d, got %d in return", echoByte, echoRes.EchoByte)
 	time.Sleep(time.Second)
 
-	log.Println("[Client] i want list of peers...")
+	logger.Infof("i want list of peers...")
 	rf, err = cm.RequestFrameFrom(cm.ListPeersRequest{})
 	if err != nil {
-		log.Fatalln(err)
+		logger.Fatal(err)
 	}
 
 	err = c.WriteJSON(rf)
 	if err != nil {
-		log.Fatalln(err)
+		logger.Fatal(err)
 	}
 
 	var listPeersResFrame cm.ResponseFrame
 	err = c.ReadJSON(&listPeersResFrame)
 	if err != nil {
-		log.Fatalln(err)
+		logger.Fatal(err)
 	}
 
 	listPeersRes, err := cm.ResponseFromFrame[cm.ListPeersResponse](listPeersResFrame)
 	if err != nil {
-		log.Fatalln(err)
+		logger.Fatal(err)
 	}
 
-	log.Println("[Client] printing list of peers:")
+	logger.Info("printing list of peers:")
 
 	for _, p := range listPeersRes.PeersInfo {
-		log.Printf("[Client] %+v\n", p)
+		logger.Infof("%+v", p)
 	}
 
 	time.Sleep(time.Second * 5)
+	logger.Info("closing connection...")
 	c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 }

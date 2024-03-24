@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 )
 
-// Constants:
+// Constants
 
 const (
 	EchoRID      = 1
