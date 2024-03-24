@@ -1,14 +1,14 @@
 package server
 
 import (
-	"bufio"
 	"encoding/json"
-	"io"
 	"log"
-	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/bcrypt"
 	"krzyzanowski.dev/p2pchat/common"
 )
@@ -19,6 +19,8 @@ type Account struct {
 }
 
 type ServerContext struct {
+	idCounter     int
+	idCounterLock sync.RWMutex
 	peersList     []*Peer
 	peersListLock sync.RWMutex
 	accounts      map[string]*Account
@@ -26,15 +28,19 @@ type ServerContext struct {
 }
 
 type HandlerContext struct {
-	peer   *Peer
-	srvCtx *ServerContext
+	peer *Peer
+	*ServerContext
 }
 
 type Peer struct {
 	id         int
-	conn       net.Conn
+	conn       *websocket.Conn
 	hasAccount bool
 	account    *Account
+}
+
+func NewPeer(conn *websocket.Conn) *Peer {
+	return &Peer{-1, conn, false, nil}
 }
 
 func peerSliceIndexOf(s []*Peer, id int) int {
@@ -53,98 +59,40 @@ func peerSliceRemove(s *[]*Peer, i int) {
 	*s = (*s)[:len(*s)-1]
 }
 
+func (srvCtx *ServerContext) removePeer(peer *Peer) {
+	srvCtx.peersListLock.Lock()
+	peerSliceRemove(&srvCtx.peersList, peerSliceIndexOf(srvCtx.peersList, peer.id))
+	srvCtx.peersListLock.Unlock()
+}
+
 func handleDisconnection(handlerCtx *HandlerContext) {
-	handlerCtx.srvCtx.peersListLock.Lock()
-	p := handlerCtx.srvCtx.peersList[peerSliceIndexOf(handlerCtx.srvCtx.peersList, handlerCtx.peer.id)]
-	log.Printf("[Server] %s disconnected\n", p.conn.RemoteAddr())
-	peerSliceRemove(&handlerCtx.srvCtx.peersList, peerSliceIndexOf(handlerCtx.srvCtx.peersList, handlerCtx.peer.id))
-	handlerCtx.srvCtx.peersListLock.Unlock()
+	handlerCtx.removePeer(handlerCtx.peer)
+	log.Printf("[Server] %s disconnected\n", handlerCtx.peer.conn.RemoteAddr())
 }
 
-func handlePeer(handlerCtx *HandlerContext) {
-	br := bufio.NewReader(handlerCtx.peer.conn)
-	bw := bufio.NewWriter(handlerCtx.peer.conn)
-
-	for {
-		reqBytes, err := br.ReadBytes('\n')
-
-		if err == io.EOF {
-			handleDisconnection(handlerCtx)
-			break
-		} else if err != nil {
-			log.Println(err)
-			break
-		}
-
-		if len(reqBytes) <= 1 {
-			log.Println("got request without id")
-			break
-		}
-
-		reqBytes = reqBytes[:len(reqBytes)-1]
-		operationCode := reqBytes[0]
-		reqJsonBytes := reqBytes[1:]
-		var resBytes []byte
-
-		if operationCode == common.EchoRID {
-			resBytes, err = handleEcho(handlerCtx, reqJsonBytes)
-		} else if operationCode == common.ListPeersRID {
-			resBytes, err = handleListPeers(handlerCtx, reqJsonBytes)
-		} else if operationCode == common.AuthRID {
-			resBytes, err = handleAuth(handlerCtx, reqJsonBytes)
-		}
-
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-
-		resBytes = append(resBytes, '\n')
-		_, err = bw.Write(resBytes)
-
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-
-		err = bw.Flush()
-
-		if err != nil {
-			log.Println(err)
-		}
-	}
-}
-
-func handleEcho(_ *HandlerContext, reqBytes []byte) (resBytes []byte, err error) {
-	var echoReq common.EchoRequest
-	err = json.Unmarshal(reqBytes, &echoReq)
-
+func (hdlCtx *HandlerContext) handleEcho(reqFrame *common.RequestFrame) (res common.Response, err error) {
+	echoReq, err := common.RequestFromFrame[common.EchoRequest](*reqFrame)
 	if err != nil {
+		log.Println("[Server] could not read request from frame")
 		return nil, err
 	}
 
 	echoRes := common.EchoResponse(echoReq)
-	resBytes, err = json.Marshal(echoRes)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return resBytes, nil
+	return echoRes, nil
 }
 
-func handleListPeers(handlerCtx *HandlerContext, reqBytes []byte) (resBytes []byte, err error) {
-	var listPeersReq common.ListPeersRequest
-	err = json.Unmarshal(reqBytes, &listPeersReq)
-
+func (hdlCtx *HandlerContext) handleListPeers(reqFrame *common.RequestFrame) (res common.Response, err error) {
+	// Currently list peers request is empty, so we can ignore it - we won't use it
+	_, err = common.RequestFromFrame[common.ListPeersRequest](*reqFrame)
 	if err != nil {
+		log.Println("[Server] could not read request from frame")
 		return nil, err
 	}
 
-	handlerCtx.srvCtx.peersListLock.RLock()
-	peersFreeze := make([]*Peer, len(handlerCtx.srvCtx.peersList))
-	copy(peersFreeze, handlerCtx.srvCtx.peersList)
-	handlerCtx.srvCtx.peersListLock.RUnlock()
+	hdlCtx.peersListLock.RLock()
+	peersFreeze := make([]*Peer, len(hdlCtx.peersList))
+	copy(peersFreeze, hdlCtx.peersList)
+	hdlCtx.peersListLock.RUnlock()
 	listPeersRes := common.ListPeersResponse{PeersInfo: make([]common.PeerInfo, 0)}
 
 	for _, peer := range peersFreeze {
@@ -159,68 +107,55 @@ func handleListPeers(handlerCtx *HandlerContext, reqBytes []byte) (resBytes []by
 		)
 	}
 
-	resBytes, err = json.Marshal(listPeersRes)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return resBytes, nil
+	return listPeersRes, nil
 }
 
-func handleAuth(handlerCtx *HandlerContext, reqBytes []byte) (resBytes []byte, err error) {
-	var authReq common.AuthRequest
-	err = json.Unmarshal(reqBytes, &authReq)
-
+func (hdlCtx *HandlerContext) handleAuth(reqFrame *common.RequestFrame) (res common.Response, err error) {
+	authReq, err := common.RequestFromFrame[common.AuthRequest](*reqFrame)
 	if err != nil {
+		log.Println("[Server] could not read request from frame")
 		return nil, err
 	}
 
 	// Check if account already exists
-	handlerCtx.srvCtx.accountsLock.RLock()
-	account, ok := handlerCtx.srvCtx.accounts[authReq.Nickname]
-	handlerCtx.srvCtx.accountsLock.RUnlock()
-	var authRes common.AuthResponse
+	hdlCtx.accountsLock.RLock()
+	account, ok := hdlCtx.accounts[authReq.Nickname]
+	hdlCtx.accountsLock.RUnlock()
+	var authRes *common.AuthResponse
 
 	if ok {
 		// Check if password matches
 		if bcrypt.CompareHashAndPassword(account.passHash, []byte(authReq.Password)) == nil {
-			authRes = common.AuthResponse{IsSuccess: true}
-			handlerCtx.srvCtx.peersListLock.Lock()
-			handlerCtx.peer.hasAccount = true
-			handlerCtx.peer.account = account
-			handlerCtx.srvCtx.peersListLock.Unlock()
+			authRes = &common.AuthResponse{IsSuccess: true}
+			hdlCtx.peersListLock.Lock()
+			hdlCtx.peer.hasAccount = true
+			hdlCtx.peer.account = account
+			hdlCtx.peersListLock.Unlock()
 		} else {
-			authRes = common.AuthResponse{IsSuccess: false}
+			authRes = &common.AuthResponse{IsSuccess: false}
 		}
 	} else {
-		authRes = common.AuthResponse{IsSuccess: true}
+		authRes = &common.AuthResponse{IsSuccess: true}
 		passHash, err := bcrypt.GenerateFromPassword([]byte(authReq.Password), bcrypt.DefaultCost)
 
 		if err != nil {
-			authRes = common.AuthResponse{IsSuccess: false}
+			authRes = &common.AuthResponse{IsSuccess: false}
 		} else {
 			newAcc := Account{authReq.Nickname, passHash}
-			handlerCtx.srvCtx.accountsLock.Lock()
-			handlerCtx.srvCtx.accounts[newAcc.nickname] = &newAcc
-			handlerCtx.srvCtx.accountsLock.Unlock()
-			handlerCtx.srvCtx.peersListLock.Lock()
-			handlerCtx.peer.hasAccount = true
-			handlerCtx.peer.account = &newAcc
-			handlerCtx.srvCtx.peersListLock.Unlock()
+			hdlCtx.accountsLock.Lock()
+			hdlCtx.accounts[newAcc.nickname] = &newAcc
+			hdlCtx.accountsLock.Unlock()
+			hdlCtx.peersListLock.Lock()
+			hdlCtx.peer.hasAccount = true
+			hdlCtx.peer.account = &newAcc
+			hdlCtx.peersListLock.Unlock()
 		}
 	}
 
-	resBytes, err = json.Marshal(authRes)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return resBytes, nil
+	return authRes, nil
 }
 
-func printConnectedPeers(srvCtx *ServerContext) {
+func (srvCtx *ServerContext) printConnectedPeers() {
 	srvCtx.peersListLock.RLock()
 	log.Println("[Server] displaying all connections:")
 
@@ -237,36 +172,107 @@ func printConnectedPeers(srvCtx *ServerContext) {
 	srvCtx.peersListLock.RUnlock()
 }
 
-func RunServer() {
-	idCounter := 0
-	srvCtx := &ServerContext{peersList: make([]*Peer, 0), accounts: make(map[string]*Account)}
-	ln, err := net.Listen("tcp", ":8080")
+func (hdlCtx *HandlerContext) handleRequest(reqJsonBytes []byte) error {
+	log.Printf("[Server] got message text: %s\n", strings.Trim(string(reqJsonBytes), "\n"))
+	var reqFrame common.RequestFrame
+	json.Unmarshal(reqJsonBytes, &reqFrame)
+	log.Printf("[Server] unmarshalled request frame (ID=%d)\n", reqFrame.ID)
+	var res common.Response
+	var err error
 
-	if err != nil {
-		log.Println(err)
+	if reqFrame.ID == common.AuthRID {
+		res, err = hdlCtx.handleAuth(&reqFrame)
+	} else if reqFrame.ID == common.ListPeersRID {
+		res, err = hdlCtx.handleListPeers(&reqFrame)
+	} else if reqFrame.ID == common.EchoRID {
+		res, err = hdlCtx.handleEcho(&reqFrame)
 	}
 
-	go func() {
-		for {
-			printConnectedPeers(srvCtx)
-			time.Sleep(time.Second * 5)
-		}
-	}()
+	if err != nil {
+		log.Printf("[Server] could not handle request ID=%d\n", reqFrame.ID)
+		return err
+	}
+
+	resFrame, err := common.ResponseFrameFrom(res)
+	if err != nil {
+		log.Println("[Server] could not create frame from response")
+		return err
+	}
+
+	resJsonBytes, err := json.Marshal(resFrame)
+	if err != nil {
+		log.Println("[Server] error marshalling frame to json")
+		return err
+	}
+
+	log.Printf("[Server] sending %s\n", string(resJsonBytes))
+	err = hdlCtx.peer.conn.WriteMessage(websocket.TextMessage, resJsonBytes)
+	if err != nil {
+		log.Println("[Server] error writing response frame")
+		return err
+	}
+
+	return nil
+}
+
+func (srvCtx *ServerContext) addPeer(peer *Peer) {
+	srvCtx.idCounterLock.Lock()
+	srvCtx.idCounter++
+	peer.id = srvCtx.idCounter
+	srvCtx.idCounterLock.Unlock()
+	srvCtx.peersListLock.Lock()
+	srvCtx.peersList = append(srvCtx.peersList, peer)
+	srvCtx.peersListLock.Unlock()
+}
+
+func (srvCtx *ServerContext) wsapiHandler(w http.ResponseWriter, r *http.Request) {
+	upgrader := websocket.Upgrader{}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println("[Server] upgrade failed")
+		return
+	}
+
+	peer := NewPeer(conn)
+	srvCtx.addPeer(peer)
+	handlerCtx := &HandlerContext{peer, srvCtx}
+	defer handleDisconnection(handlerCtx)
+	defer conn.Close()
+	log.Printf("[Server] %s connected\n", conn.RemoteAddr())
 
 	for {
-		c, err := ln.Accept()
+		messType, messBytes, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
 
+		if messType != 1 {
+			err := conn.WriteMessage(websocket.CloseUnsupportedData, []byte("Only JSON text is supported"))
+			if err != nil {
+				log.Println("[Server] error sending close message due to unsupported data")
+			}
+
+			return
+		}
+
+		err = handlerCtx.handleRequest(messBytes)
 		if err != nil {
 			log.Println(err)
 			break
 		}
-
-		log.Printf("[Server] client connected %s\n", c.RemoteAddr())
-		idCounter++
-		newPeer := Peer{idCounter, c, false, nil}
-		srvCtx.peersListLock.Lock()
-		srvCtx.peersList = append(srvCtx.peersList, &newPeer)
-		srvCtx.peersListLock.Unlock()
-		go handlePeer(&HandlerContext{&newPeer, srvCtx})
 	}
+}
+
+func RunServer() {
+	srvCtx := &ServerContext{peersList: make([]*Peer, 0), accounts: make(map[string]*Account)}
+
+	go func() {
+		for {
+			srvCtx.printConnectedPeers()
+			time.Sleep(time.Second * 5)
+		}
+	}()
+
+	http.HandleFunc("/wsapi", srvCtx.wsapiHandler)
+	http.ListenAndServe(":8080", nil)
 }
