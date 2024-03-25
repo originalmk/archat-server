@@ -35,7 +35,7 @@ func RequestFrameFrom(req Request) (RequestFrame, error) {
 		return *new(RequestFrame), err
 	}
 
-	return RequestFrame{req.GetRID(), jsonBytes}, nil
+	return RequestFrame{req.RID(), jsonBytes}, nil
 }
 
 func RequestFromFrame[T Request](reqFrame RequestFrame) (T, error) {
@@ -61,7 +61,7 @@ func ResponseFrameFrom(res Response) (ResponseFrame, error) {
 		return *new(ResponseFrame), err
 	}
 
-	return ResponseFrame{res.GetRID(), jsonBytes}, nil
+	return ResponseFrame{res.RID(), jsonBytes}, nil
 }
 
 func ResponseFromFrame[T Response](resFrame ResponseFrame) (T, error) {
@@ -76,7 +76,7 @@ func ResponseFromFrame[T Response](resFrame ResponseFrame) (T, error) {
 }
 
 type Request interface {
-	GetRID() int
+	RID() int
 }
 
 type Response Request
@@ -85,7 +85,7 @@ type EchoRequest struct {
 	EchoByte byte `json:"echoByte"`
 }
 
-func (EchoRequest) GetRID() int {
+func (EchoRequest) RID() int {
 	return EchoRID
 }
 
@@ -93,14 +93,14 @@ type EchoResponse struct {
 	EchoByte byte `json:"echoByte"`
 }
 
-func (EchoResponse) GetRID() int {
+func (EchoResponse) RID() int {
 	return EchoRID
 }
 
 type ListPeersRequest struct {
 }
 
-func (ListPeersRequest) GetRID() int {
+func (ListPeersRequest) RID() int {
 	return ListPeersRID
 }
 
@@ -108,7 +108,7 @@ type ListPeersResponse struct {
 	PeersInfo []PeerInfo `json:"peers"`
 }
 
-func (ListPeersResponse) GetRID() int {
+func (ListPeersResponse) RID() int {
 	return ListPeersRID
 }
 
@@ -117,18 +117,7 @@ type AuthRequest struct {
 	Password string `json:"password"`
 }
 
-func (req AuthRequest) MarshalJSON() ([]byte, error) {
-	type Alias AuthRequest
-	return json.Marshal(&struct {
-		ID int `json:"id"`
-		Alias
-	}{
-		AuthRID,
-		Alias(req),
-	})
-}
-
-func (AuthRequest) GetRID() int {
+func (AuthRequest) RID() int {
 	return AuthRID
 }
 
@@ -136,6 +125,6 @@ type AuthResponse struct {
 	IsSuccess bool
 }
 
-func (AuthResponse) GetRID() int {
+func (AuthResponse) RID() int {
 	return AuthRID
 }
