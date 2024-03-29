@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"golang.org/x/sync/errgroup"
 	"net/http"
 	"os"
 	"strings"
@@ -46,9 +47,7 @@ func NewHandlerContext(peer *Peer, srvCtx *Context) *HandlerContext {
 	}
 }
 
-func (hdlCtx *HandlerContext) clientHandler(hdlWg *sync.WaitGroup) error {
-	defer hdlWg.Done()
-
+func (hdlCtx *HandlerContext) clientHandler() error {
 	for {
 		reqFrame := <-hdlCtx.reqFromClient
 		var res common.Response
@@ -68,6 +67,7 @@ func (hdlCtx *HandlerContext) clientHandler(hdlWg *sync.WaitGroup) error {
 		}
 
 		resFrame, err := common.ResponseFrameFrom(res)
+
 		if err != nil {
 			logger.Errorf("could not create frame from response")
 			return err
@@ -77,12 +77,11 @@ func (hdlCtx *HandlerContext) clientHandler(hdlWg *sync.WaitGroup) error {
 	}
 }
 
-func (hdlCtx *HandlerContext) clientWriter(hdlWg *sync.WaitGroup) error {
-	defer hdlWg.Done()
-
+func (hdlCtx *HandlerContext) clientWriter() error {
 	for {
 		rFrame := <-hdlCtx.rToClient
 		resJsonBytes, err := json.Marshal(rFrame)
+
 		if err != nil {
 			logger.Errorf("error marshalling frame to json")
 			return err
@@ -90,6 +89,7 @@ func (hdlCtx *HandlerContext) clientWriter(hdlWg *sync.WaitGroup) error {
 
 		logger.Debugf("sending %s", string(resJsonBytes))
 		err = hdlCtx.peer.conn.WriteMessage(websocket.TextMessage, resJsonBytes)
+
 		if err != nil {
 			logger.Errorf("error writing rframe")
 			return err
@@ -97,11 +97,10 @@ func (hdlCtx *HandlerContext) clientWriter(hdlWg *sync.WaitGroup) error {
 	}
 }
 
-func (hdlCtx *HandlerContext) clientReader(hdlWg *sync.WaitGroup) error {
-	defer hdlWg.Done()
-
+func (hdlCtx *HandlerContext) clientReader() error {
 	for {
 		messType, messBytes, err := hdlCtx.peer.conn.ReadMessage()
+
 		if err != nil {
 			return err
 		}
@@ -116,10 +115,15 @@ func (hdlCtx *HandlerContext) clientReader(hdlWg *sync.WaitGroup) error {
 
 		logger.Debugf("got message text: %s", strings.Trim(string(messBytes), "\n"))
 		var rFrame common.RFrame
-		json.Unmarshal(messBytes, &rFrame)
+		err = json.Unmarshal(messBytes, &rFrame)
+
+		if err != nil {
+			return err
+		}
+
 		logger.Debugf("unmarshalled request frame (ID=%d)", rFrame.ID)
 
-		if rFrame.ID > 128 {
+		if rFrame.IsResponse() {
 			logger.Debug("it is response frame", "id", rFrame.ID)
 			hdlCtx.resFromClient <- rFrame
 		} else {
@@ -131,6 +135,7 @@ func (hdlCtx *HandlerContext) clientReader(hdlWg *sync.WaitGroup) error {
 
 func (hdlCtx *HandlerContext) sendRequest(req common.Request) error {
 	rf, err := common.RequestFrameFrom(req)
+
 	if err != nil {
 		return err
 	}
@@ -171,11 +176,13 @@ func NewPeer(conn *websocket.Conn) *Peer {
 func peerSliceIndexOf(s []*Peer, id int) int {
 	i := 0
 	var p *Peer
+
 	for i, p = range s {
 		if p.id == id {
 			break
 		}
 	}
+
 	return i
 }
 
@@ -197,6 +204,7 @@ func handleDisconnection(handlerCtx *HandlerContext) {
 
 func (hdlCtx *HandlerContext) handleEcho(reqFrame *common.RFrame) (res common.Response, err error) {
 	echoReq, err := common.RequestFromFrame[common.EchoRequest](*reqFrame)
+
 	if err != nil {
 		logger.Error("could not read request from frame")
 		return nil, err
@@ -209,6 +217,7 @@ func (hdlCtx *HandlerContext) handleEcho(reqFrame *common.RFrame) (res common.Re
 func (hdlCtx *HandlerContext) handleListPeers(reqFrame *common.RFrame) (res common.Response, err error) {
 	// Currently list peers request is empty, so we can ignore it - we won't use it
 	_, err = common.RequestFromFrame[common.ListPeersRequest](*reqFrame)
+
 	if err != nil {
 		logger.Error("could not read request from frame")
 		return nil, err
@@ -224,10 +233,10 @@ func (hdlCtx *HandlerContext) handleListPeers(reqFrame *common.RFrame) (res comm
 		listPeersRes.PeersInfo = append(
 			listPeersRes.PeersInfo,
 			common.PeerInfo{
-				ID:           peer.id,
-				Addr:         peer.conn.RemoteAddr().String(),
-				HasNickaname: peer.hasAccount,
-				Nickname:     peer.account.nickname,
+				ID:          peer.id,
+				Addr:        peer.conn.RemoteAddr().String(),
+				HasNickname: peer.hasAccount,
+				Nickname:    peer.account.nickname,
 			},
 		)
 	}
@@ -237,6 +246,7 @@ func (hdlCtx *HandlerContext) handleListPeers(reqFrame *common.RFrame) (res comm
 
 func (hdlCtx *HandlerContext) handleAuth(reqFrame *common.RFrame) (res common.Response, err error) {
 	authReq, err := common.RequestFromFrame[common.AuthRequest](*reqFrame)
+
 	if err != nil {
 		logger.Error("could not read request from frame")
 		return nil, err
@@ -307,9 +317,26 @@ func (srvCtx *Context) addPeer(peer *Peer) {
 	srvCtx.peersListLock.Unlock()
 }
 
+func testEcho(hdlCtx *HandlerContext) {
+	logger.Debug("sending echo request...")
+	_ = hdlCtx.sendRequest(common.EchoRequest{EchoByte: 123})
+	logger.Debug("sent")
+	echoResF := hdlCtx.getResponseFrame()
+	logger.Debug("got response")
+	echoRes, err := common.ResponseFromFrame[common.EchoResponse](echoResF)
+
+	if err != nil {
+		logger.Error(err)
+		return
+	}
+
+	logger.Debug("test echo done", "byteSent", 123, "byteReceived", echoRes.EchoByte)
+}
+
 func (srvCtx *Context) wsapiHandler(w http.ResponseWriter, r *http.Request) {
 	upgrader := websocket.Upgrader{}
 	conn, err := upgrader.Upgrade(w, r, nil)
+
 	if err != nil {
 		logger.Errorf("upgrade failed")
 		return
@@ -319,28 +346,26 @@ func (srvCtx *Context) wsapiHandler(w http.ResponseWriter, r *http.Request) {
 	srvCtx.addPeer(peer)
 	handlerCtx := NewHandlerContext(peer, srvCtx)
 	defer handleDisconnection(handlerCtx)
-	defer conn.Close()
+
+	defer func(conn *websocket.Conn) {
+		err := conn.Close()
+		if err != nil {
+			logger.Error(err)
+		}
+	}(conn)
+
 	logger.Infof("%s connected", conn.RemoteAddr())
+	errGroup := new(errgroup.Group)
+	errGroup.Go(handlerCtx.clientHandler)
+	errGroup.Go(handlerCtx.clientWriter)
+	errGroup.Go(handlerCtx.clientReader)
+	testEcho(handlerCtx)
+	err = errGroup.Wait()
 
-	var handlerWg sync.WaitGroup
-	handlerWg.Add(3)
-	go handlerCtx.clientWriter(&handlerWg)
-	go handlerCtx.clientHandler(&handlerWg)
-	go handlerCtx.clientReader(&handlerWg)
-
-	logger.Debug("sending echo request...")
-	handlerCtx.sendRequest(common.EchoRequest{EchoByte: 123})
-	logger.Debug("sent")
-	echoResF := handlerCtx.getResponseFrame()
-	logger.Debug("got response")
-	echoRes, err := common.ResponseFromFrame[common.EchoResponse](echoResF)
 	if err != nil {
 		logger.Error(err)
 		return
 	}
-	logger.Debug("test echo done", "byteSent", 123, "byteReceived", echoRes.EchoByte)
-
-	handlerWg.Wait()
 }
 
 func RunServer() {
@@ -355,5 +380,9 @@ func RunServer() {
 
 	http.HandleFunc("/wsapi", srvCtx.wsapiHandler)
 	logger.Info("Starting server...")
-	http.ListenAndServe(":8080", nil)
+	err := http.ListenAndServe(":8080", nil)
+
+	if err != nil {
+		logger.Error(err)
+	}
 }

@@ -18,10 +18,10 @@ const (
 // Requests & responses subtypes
 
 type PeerInfo struct {
-	ID           int    `json:"id"`
-	Addr         string `json:"addr"`
-	HasNickaname bool   `json:"hasNickname"`
-	Nickname     string `json:"nickname"`
+	ID          int    `json:"id"`
+	Addr        string `json:"addr"`
+	HasNickname bool   `json:"hasNickname"`
+	Nickname    string `json:"nickname"`
 }
 
 // Requests & responses:
@@ -29,6 +29,14 @@ type PeerInfo struct {
 type RFrame struct {
 	ID   int             `json:"id"`
 	Rest json.RawMessage `json:"r"`
+}
+
+func (rf RFrame) IsRequest() bool {
+	return rf.ID <= 128
+}
+
+func (rf RFrame) IsResponse() bool {
+	return rf.ID > 128
 }
 
 func RequestFrameFrom(req Request) (RFrame, error) {

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"golang.org/x/sync/errgroup"
 	"math/rand"
 	"net/url"
 	"os"
@@ -76,7 +77,7 @@ func (cliCtx *Context) serverReader() error {
 
 		logger.Debug("frame read", "id", rFrame.ID)
 
-		if rFrame.ID > 128 {
+		if rFrame.IsResponse() {
 			cliCtx.resFromServer <- rFrame
 		} else {
 			cliCtx.reqFromServer <- rFrame
@@ -116,38 +117,65 @@ func init() {
 
 func testAuth(ctx *Context) {
 	logger.Info("Trying to authenticate as krzmaciek...")
-	ctx.sendRequest(cm.AuthRequest{Nickname: "krzmaciek", Password: "9maciek1"})
+	err := ctx.sendRequest(cm.AuthRequest{Nickname: "krzmaciek", Password: "9maciek1"})
+
+	if err != nil {
+		logger.Error(err)
+		return
+	}
+
 	logger.Debug("Request sent, waiting for response...")
 	arf := ctx.getResponseFrame()
 	ar, err := cm.ResponseFromFrame[cm.AuthResponse](arf)
+
 	if err != nil {
 		logger.Error(err)
+		return
 	}
+
 	logger.Infof("Authenticated?: %t", ar.IsSuccess)
 }
 
 func testEcho(ctx *Context) {
 	echoByte := rand.Intn(32)
 	logger.Info("Testing echo...", "echoByte", echoByte)
-	ctx.sendRequest(cm.EchoRequest{EchoByte: byte(echoByte)})
+	err := ctx.sendRequest(cm.EchoRequest{EchoByte: byte(echoByte)})
+
+	if err != nil {
+		logger.Error(err)
+		return
+	}
+
 	logger.Debug("Request sent, waiting for response...")
 	ereqf := ctx.getResponseFrame()
 	ereq, err := cm.ResponseFromFrame[cm.EchoResponse](ereqf)
+
 	if err != nil {
 		logger.Error(err)
+		return
 	}
+
 	logger.Info("Got response", "echoByte", ereq.EchoByte)
 }
 
 func testListPeers(ctx *Context) {
 	logger.Info("Trying to get list of peers...")
-	ctx.sendRequest(cm.ListPeersRequest{})
+	err := ctx.sendRequest(cm.ListPeersRequest{})
+
+	if err != nil {
+		logger.Error(err)
+		return
+	}
+
 	logger.Debug("Request sent, waiting for response...")
 	lpreqf := ctx.getResponseFrame()
 	lpreq, err := cm.ResponseFromFrame[cm.ListPeersResponse](lpreqf)
+
 	if err != nil {
 		logger.Error(err)
+		return
 	}
+
 	logger.Info("Got that list", "peersList", lpreq.PeersInfo)
 }
 
@@ -160,18 +188,32 @@ func RunClient() {
 		return
 	}
 
-	defer c.Close()
+	defer func(c *websocket.Conn) {
+		err := c.Close()
+		if err != nil {
+			logger.Error(err)
+		}
+	}(c)
 
 	ctx := NewClientContext(c)
-	go ctx.serverHandler()
-	go ctx.serverReader()
-	go ctx.serverWriter()
+	errGroup := new(errgroup.Group)
+	errGroup.Go(ctx.serverHandler)
+	errGroup.Go(ctx.serverReader)
+	errGroup.Go(ctx.serverWriter)
 
 	testAuth(ctx)
 	testEcho(ctx)
 	testListPeers(ctx)
+	err = errGroup.Wait()
 
-	time.Sleep(time.Second * 5)
+	if err != nil {
+		logger.Error(err)
+	}
+
 	logger.Info("closing connection...")
-	c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+	err = c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+
+	if err != nil {
+		logger.Error(err)
+	}
 }
