@@ -7,9 +7,12 @@ import (
 // Constants
 
 const (
-	EchoRID      = 1
-	ListPeersRID = 2
-	AuthRID      = 3
+	EchoReqID      = 1
+	EchoResID      = 128 + EchoReqID
+	ListPeersReqID = 2
+	ListPeersResID = 128 + ListPeersReqID
+	AuthReqID      = 3
+	AuthResID      = 128 + AuthReqID
 )
 
 // Requests & responses subtypes
@@ -23,22 +26,22 @@ type PeerInfo struct {
 
 // Requests & responses:
 
-type RequestFrame struct {
+type RFrame struct {
 	ID   int             `json:"id"`
-	Rest json.RawMessage `json:"request"`
+	Rest json.RawMessage `json:"r"`
 }
 
-func RequestFrameFrom(req Request) (RequestFrame, error) {
+func RequestFrameFrom(req Request) (RFrame, error) {
 	jsonBytes, err := json.Marshal(req)
 
 	if err != nil {
-		return *new(RequestFrame), err
+		return *new(RFrame), err
 	}
 
-	return RequestFrame{req.RID(), jsonBytes}, nil
+	return RFrame{req.ID(), jsonBytes}, nil
 }
 
-func RequestFromFrame[T Request](reqFrame RequestFrame) (T, error) {
+func RequestFromFrame[T Request](reqFrame RFrame) (T, error) {
 	var req T
 	err := json.Unmarshal(reqFrame.Rest, &req)
 
@@ -49,22 +52,17 @@ func RequestFromFrame[T Request](reqFrame RequestFrame) (T, error) {
 	return req, nil
 }
 
-type ResponseFrame struct {
-	ID   int             `json:"id"`
-	Rest json.RawMessage `json:"response"`
-}
-
-func ResponseFrameFrom(res Response) (ResponseFrame, error) {
+func ResponseFrameFrom(res Response) (RFrame, error) {
 	jsonBytes, err := json.Marshal(res)
 
 	if err != nil {
-		return *new(ResponseFrame), err
+		return *new(RFrame), err
 	}
 
-	return ResponseFrame{res.RID(), jsonBytes}, nil
+	return RFrame{res.ID(), jsonBytes}, nil
 }
 
-func ResponseFromFrame[T Response](resFrame ResponseFrame) (T, error) {
+func ResponseFromFrame[T Response](resFrame RFrame) (T, error) {
 	var res T
 	err := json.Unmarshal(resFrame.Rest, &res)
 
@@ -76,7 +74,7 @@ func ResponseFromFrame[T Response](resFrame ResponseFrame) (T, error) {
 }
 
 type Request interface {
-	RID() int
+	ID() int
 }
 
 type Response Request
@@ -85,31 +83,31 @@ type EchoRequest struct {
 	EchoByte byte `json:"echoByte"`
 }
 
-func (EchoRequest) RID() int {
-	return EchoRID
+func (EchoRequest) ID() int {
+	return EchoReqID
 }
 
 type EchoResponse struct {
 	EchoByte byte `json:"echoByte"`
 }
 
-func (EchoResponse) RID() int {
-	return EchoRID
+func (EchoResponse) ID() int {
+	return EchoResID
 }
 
 type ListPeersRequest struct {
 }
 
-func (ListPeersRequest) RID() int {
-	return ListPeersRID
+func (ListPeersRequest) ID() int {
+	return ListPeersReqID
 }
 
 type ListPeersResponse struct {
 	PeersInfo []PeerInfo `json:"peers"`
 }
 
-func (ListPeersResponse) RID() int {
-	return ListPeersRID
+func (ListPeersResponse) ID() int {
+	return ListPeersResID
 }
 
 type AuthRequest struct {
@@ -117,14 +115,14 @@ type AuthRequest struct {
 	Password string `json:"password"`
 }
 
-func (AuthRequest) RID() int {
-	return AuthRID
+func (AuthRequest) ID() int {
+	return AuthReqID
 }
 
 type AuthResponse struct {
 	IsSuccess bool
 }
 
-func (AuthResponse) RID() int {
-	return AuthRID
+func (AuthResponse) ID() int {
+	return AuthResID
 }
