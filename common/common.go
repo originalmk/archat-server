@@ -7,12 +7,16 @@ import (
 // Constants
 
 const (
-	EchoReqID      = 1
-	EchoResID      = 128 + EchoReqID
-	ListPeersReqID = 2
-	ListPeersResID = 128 + ListPeersReqID
-	AuthReqID      = 3
-	AuthResID      = 128 + AuthReqID
+	EchoReqID       = 1
+	EchoResID       = 128 + EchoReqID
+	ListPeersReqID  = 2
+	ListPeersResID  = 128 + ListPeersReqID
+	AuthReqID       = 3
+	AuthResID       = 128 + AuthReqID
+	StartChatAReqID = 4
+	StartChatBReqID = 5
+	StartChatCReqID = 6
+	StartChatDReqID = 7
 )
 
 // Requests & responses subtypes
@@ -133,4 +137,40 @@ type AuthResponse struct {
 
 func (AuthResponse) ID() int {
 	return AuthResID
+}
+
+// "Stateful" requests like these need to have some information identifying what operation they are linked to
+// There may be some errors if two requests are sent by one host to the same other host... may they?
+
+type StartChatARequest struct {
+	Nickname string `json:"nickname"`
+}
+
+func (StartChatARequest) ID() int {
+	return StartChatAReqID
+}
+
+type StartChatBRequest struct {
+	Nickname string `json:"nickname"`
+}
+
+func (StartChatBRequest) ID() int {
+	return StartChatBReqID
+}
+
+type StartChatCRequest struct {
+	Nickname string `json:"nickname"`
+}
+
+func (StartChatCRequest) ID() int {
+	return StartChatCReqID
+}
+
+type StartChatDRequest struct {
+	Nickname string `json:"nickname"`
+	Accept   bool   `json:"accept"`
+}
+
+func (StartChatDRequest) ID() int {
+	return StartChatDReqID
 }
