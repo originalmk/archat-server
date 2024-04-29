@@ -7,8 +7,10 @@ import (
 	"golang.org/x/sync/errgroup"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -20,9 +22,11 @@ type Context struct {
 	conn *websocket.Conn
 	// Assumption: size of 1 is enough, because first response read will be response for the last request
 	// no need to buffer
-	resFromServer chan cm.RFrame
-	reqFromServer chan cm.RFrame
-	rToServer     chan cm.RFrame
+	resFromServer   chan cm.RFrame
+	reqFromServer   chan cm.RFrame
+	rToServer       chan cm.RFrame
+	initiations     []*cm.Initiation
+	initiationsLock sync.RWMutex
 }
 
 func NewClientContext(conn *websocket.Conn) *Context {
@@ -37,6 +41,7 @@ func NewClientContext(conn *websocket.Conn) *Context {
 func (cliCtx *Context) serverHandler(syncCtx context.Context) error {
 	defer logger.Debug("server handler last line...")
 
+handleNext:
 	for {
 		select {
 		case <-syncCtx.Done():
@@ -44,23 +49,81 @@ func (cliCtx *Context) serverHandler(syncCtx context.Context) error {
 		case reqFrame := <-cliCtx.reqFromServer:
 			logger.Debug("got request from server", "id", reqFrame.ID)
 
+			var res cm.Response
+			var err error
+
 			if reqFrame.ID == cm.EchoReqID {
-				echoReq, err := cm.RequestFromFrame[cm.EchoRequest](reqFrame)
-				if err != nil {
-					return err
-				}
-
-				resFrame, err := cm.ResponseFrameFrom(cm.EchoResponse(echoReq))
-				if err != nil {
-					return err
-				}
-
-				cliCtx.rToServer <- resFrame
+				res, err = cliCtx.handleEcho(reqFrame)
+			} else if reqFrame.ID == cm.StartChatBReqID {
+				res, err = cliCtx.handleStartChatB(reqFrame)
+			} else if reqFrame.ID == cm.StartChatDReqID {
+				res, err = cliCtx.handleStartChatD(reqFrame)
 			} else {
 				logger.Warn("can't handle it!")
 			}
+
+			if err != nil {
+				logger.Errorf("could not handle request ID=%d", reqFrame.ID)
+				return err
+			}
+
+			if res == nil {
+				logger.Debugf("request without response ID=%d", reqFrame.ID)
+				continue handleNext
+			}
+
+			resFrame, err := cm.ResponseFrameFrom(res)
+
+			if err != nil {
+				logger.Errorf("could not create frame from response")
+				return err
+			}
+
+			cliCtx.rToServer <- resFrame
 		}
 	}
+}
+
+func (cliCtx *Context) handleEcho(reqFrame cm.RFrame) (res cm.Response, err error) {
+	echoReq, err := cm.RequestFromFrame[cm.EchoRequest](reqFrame)
+	if err != nil {
+		return nil, err
+	}
+
+	return cm.EchoResponse(echoReq), nil
+}
+
+func (cliCtx *Context) handleStartChatB(reqFrame cm.RFrame) (res cm.Response, err error) {
+	startChatBReq, err := cm.RequestFromFrame[cm.StartChatBRequest](reqFrame)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Infof("got start chat, %s wants to contact. use startchatc command to "+
+		"decide if you want to accept the chat", startChatBReq.Nickname)
+
+	cliCtx.initiationsLock.Lock()
+	cliCtx.initiations = append(cliCtx.initiations, &cm.Initiation{
+		AbANick: startChatBReq.Nickname,
+		AbBNick: "",
+		Stage:   cm.InitiationStageB,
+	})
+	cliCtx.initiationsLock.Unlock()
+
+	return nil, nil
+}
+
+func (cliCtx *Context) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, err error) {
+	startChatDReq, err := cm.RequestFromFrame[cm.StartChatDRequest](reqFrame)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Infof("servers wants to be punched, got start chat d request for %s with code %s",
+		startChatDReq.Nickname, startChatDReq.PunchCode)
+	logger.Warn("handleStartChatD not implemented yet")
+
+	return nil, nil
 }
 
 func (cliCtx *Context) serverWriter(syncCtx context.Context) error {
@@ -133,7 +196,7 @@ func init() {
 }
 
 func sendAuth(ctx *Context, nick, pass string) {
-	logger.Info("Trying to authenticate as krzmaciek...")
+	logger.Info("trying to authenticate as krzmaciek...")
 	err := ctx.sendRequest(cm.AuthRequest{Nickname: nick, Password: pass})
 
 	if err != nil {
@@ -141,7 +204,7 @@ func sendAuth(ctx *Context, nick, pass string) {
 		return
 	}
 
-	logger.Debug("Request sent, waiting for response...")
+	logger.Debug("request sent, waiting for response...")
 	arf := ctx.getResponseFrame()
 	ar, err := cm.ResponseFromFrame[cm.AuthResponse](arf)
 
@@ -154,7 +217,7 @@ func sendAuth(ctx *Context, nick, pass string) {
 }
 
 func sendEcho(ctx *Context, echoByte byte) {
-	logger.Info("Testing echo...", "echoByte", echoByte)
+	logger.Info("testing echo...", "echoByte", echoByte)
 	err := ctx.sendRequest(cm.EchoRequest{EchoByte: echoByte})
 
 	if err != nil {
@@ -162,7 +225,7 @@ func sendEcho(ctx *Context, echoByte byte) {
 		return
 	}
 
-	logger.Debug("Request sent, waiting for response...")
+	logger.Debug("request sent, waiting for response...")
 	ereqf := ctx.getResponseFrame()
 	ereq, err := cm.ResponseFromFrame[cm.EchoResponse](ereqf)
 
@@ -171,11 +234,11 @@ func sendEcho(ctx *Context, echoByte byte) {
 		return
 	}
 
-	logger.Info("Got response", "echoByte", ereq.EchoByte)
+	logger.Info("got response", "echoByte", ereq.EchoByte)
 }
 
 func sendListPeers(ctx *Context) {
-	logger.Info("Trying to get list of peers...")
+	logger.Info("trying to get list of peers...")
 	err := ctx.sendRequest(cm.ListPeersRequest{})
 
 	if err != nil {
@@ -183,7 +246,7 @@ func sendListPeers(ctx *Context) {
 		return
 	}
 
-	logger.Debug("Request sent, waiting for response...")
+	logger.Debug("request sent, waiting for response...")
 	lpreqf := ctx.getResponseFrame()
 	lpreq, err := cm.ResponseFromFrame[cm.ListPeersResponse](lpreqf)
 
@@ -196,7 +259,7 @@ func sendListPeers(ctx *Context) {
 }
 
 func sendStartChatA(ctx *Context, nick string) {
-	logger.Info("Doing chat start A...")
+	logger.Info("doing chat start A...")
 	err := ctx.sendRequest(cm.StartChatARequest{Nickname: nick})
 
 	if err != nil {
@@ -204,7 +267,27 @@ func sendStartChatA(ctx *Context, nick string) {
 		return
 	}
 
-	logger.Debug("Request sent, no wait for response")
+	logger.Debug("request sent, no wait for response")
+}
+
+func sendStartChatC(ctx *Context, nick string) {
+	idx := slices.IndexFunc(ctx.initiations, func(i *cm.Initiation) bool {
+		return i.AbANick == nick
+	})
+
+	if idx == -1 {
+		logger.Warn("user of that nick did not initiate connection, ignoring")
+		return
+	}
+
+	err := ctx.sendRequest(cm.StartChatCRequest{Nickname: nick})
+
+	if err != nil {
+		logger.Error(err)
+		return
+	}
+
+	logger.Debug("request sent, no wait for response")
 }
 
 func RunClient() {
@@ -297,6 +380,21 @@ func RunClient() {
 				}
 
 				sendStartChatA(cliCtx, cmdArgs[0])
+			} else if cmdName == "initations" {
+				logger.Info("displaying all initations...")
+
+				cliCtx.initiationsLock.RLock()
+				for _, i := range cliCtx.initiations {
+					logger.Debugf("from %s, stage: %d", i.AbANick, i.Stage)
+				}
+				cliCtx.initiationsLock.RUnlock()
+			} else if cmdName == "startchatc" {
+				if len(cmdArgs) != 1 {
+					logger.Errorf("startchatc command requires 1 argument, but %d was provided", len(cmdArgs))
+					continue
+				}
+
+				sendStartChatC(cliCtx, cmdArgs[0])
 			}
 		}
 	}()

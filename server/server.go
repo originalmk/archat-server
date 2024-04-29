@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -30,26 +31,21 @@ func NewPeer(conn *websocket.Conn) *Peer {
 	return &Peer{-1, conn, false, nil}
 }
 
+func (p *Peer) NicknameOrEmpty() string {
+	if p.hasAccount {
+		return p.account.nickname
+	} else {
+		return ""
+	}
+}
+
 type Account struct {
 	nickname string
 	passHash []byte
 }
 
-const (
-	InitiationStageA = 1
-	InitiationStageB = 2
-	InitiationStageC = 3
-	InitiationStageD = 4
-)
-
-type Initiation struct {
-	abANick string
-	abBNick string
-	stage   int
-}
-
-func NewInitiation(abA string, abB string) *Initiation {
-	return &Initiation{abA, abB, InitiationStageA}
+func NewInitiation(abA string, abB string) *common.Initiation {
+	return &common.Initiation{AbANick: abA, AbBNick: abB, Stage: common.InitiationStageA}
 }
 
 type Context struct {
@@ -59,7 +55,7 @@ type Context struct {
 	peersListLock       sync.RWMutex
 	accounts            map[string]*Account
 	accountsLock        sync.RWMutex
-	initiations         []*Initiation
+	initiations         []*common.Initiation
 	initiationsLock     sync.RWMutex
 	handlerContexts     []*HandlerContext
 	handlerContextsLock sync.RWMutex
@@ -69,7 +65,7 @@ func NewContext() *Context {
 	return &Context{
 		peersList:   make([]*Peer, 0),
 		accounts:    make(map[string]*Account),
-		initiations: make([]*Initiation, 0),
+		initiations: make([]*common.Initiation, 0),
 	}
 }
 
@@ -134,6 +130,11 @@ handleNext:
 				res, err = hdlCtx.handleEcho(&reqFrame)
 			} else if reqFrame.ID == common.StartChatAReqID {
 				res, err = hdlCtx.handleChatStartA(&reqFrame)
+			} else if reqFrame.ID == common.StartChatCReqID {
+				res, err = hdlCtx.handleChatStartC(&reqFrame)
+			} else {
+				logger.Warnf("can't handle request of ID=%d", reqFrame.ID)
+				continue
 			}
 
 			if err != nil {
@@ -271,10 +272,10 @@ func (ctx *Context) removePeer(peer *Peer) {
 			return p.id == peer.id
 		})
 
-	ctx.initiations = slices.DeleteFunc[[]*Initiation, *Initiation](
+	ctx.initiations = slices.DeleteFunc[[]*common.Initiation, *common.Initiation](
 		ctx.initiations,
-		func(i *Initiation) bool {
-			return peer.hasAccount && (peer.account.nickname == i.abANick || peer.account.nickname == i.abBNick)
+		func(i *common.Initiation) bool {
+			return peer.hasAccount && (peer.account.nickname == i.AbANick || peer.account.nickname == i.AbBNick)
 		})
 
 	// TODO: Inform the other side about peer leaving
@@ -317,21 +318,13 @@ func (hdlCtx *HandlerContext) handleListPeers(reqFrame *common.RFrame) (res comm
 	listPeersRes := common.ListPeersResponse{PeersInfo: make([]common.PeerInfo, 0)}
 
 	for _, peer := range peersFreeze {
-		var nickname string
-
-		if peer.hasAccount {
-			nickname = peer.account.nickname
-		} else {
-			nickname = ""
-		}
-
 		listPeersRes.PeersInfo = append(
 			listPeersRes.PeersInfo,
 			common.PeerInfo{
 				ID:          peer.id,
 				Addr:        peer.conn.RemoteAddr().String(),
 				HasNickname: peer.hasAccount,
-				Nickname:    nickname,
+				Nickname:    peer.NicknameOrEmpty(),
 			},
 		)
 	}
@@ -418,45 +411,99 @@ func (hdlCtx *HandlerContext) handleChatStartA(reqFrame *common.RFrame) (res com
 	receiverPeerCtx.rToClient <- chatStartBReqF
 
 	hdlCtx.initiationsLock.Lock()
-	//
+	idx := slices.IndexFunc(hdlCtx.initiations, func(i *common.Initiation) bool {
+		return i.AbANick == hdlCtx.peer.account.nickname && i.AbBNick == startChatAReq.Nickname
+	})
+	hdlCtx.initiations[idx].Stage = common.InitiationStageB
 	hdlCtx.initiationsLock.Unlock()
 
 	return nil, nil
 }
 
 func (hdlCtx *HandlerContext) handleChatStartC(reqFrame *common.RFrame) (res common.Response, err error) {
-	startChatAReq, err := common.RequestFromFrame[common.StartChatARequest](*reqFrame)
+	hdlCtx.initiationsLock.Lock()
+	startChatCReq, err := common.RequestFromFrame[common.StartChatCRequest](*reqFrame)
 
 	if err != nil {
 		return nil, err
 	}
 
-	receiverPeerCtx, err := hdlCtx.getCtxByNick(startChatAReq.Nickname)
+	logger.Debugf("got chat start c for %s", startChatCReq.Nickname)
+
+	receiverPeerCtx, err := hdlCtx.getCtxByNick(startChatCReq.Nickname)
 
 	if err != nil {
 		logger.Debug("receiver peer not found")
 		return nil, nil
 	}
 
-	// initation started
-	hdlCtx.initiationsLock.Lock()
-	hdlCtx.initiations = append(hdlCtx.initiations, NewInitiation(hdlCtx.peer.account.nickname, startChatAReq.Nickname))
-	hdlCtx.initiationsLock.Unlock()
+	idx := slices.IndexFunc(hdlCtx.initiations, func(i *common.Initiation) bool {
+		return i.AbBNick == hdlCtx.peer.account.nickname && i.AbANick == startChatCReq.Nickname
+	})
 
-	chatStartB := common.StartChatBRequest{
-		Nickname: hdlCtx.peer.account.nickname,
+	if idx == -1 {
+		logger.Debug("initation not found, won't handle")
+		return nil, nil
 	}
 
-	chatStartBReqF, err := common.RequestFrameFrom(chatStartB)
+	if hdlCtx.initiations[idx].Stage != common.InitiationStageB {
+		logger.Debug("initation found, but is not in stage B, won't handle")
+		return nil, nil
+	}
+
+	hdlCtx.initiations[idx].Stage = common.InitiationStageC
+
+	aCode, err := generatePunchCode()
+	if err != nil {
+		logger.Error("failed generating punch code for a")
+		return nil, nil
+	}
+
+	bCode, err := generatePunchCode()
+	if err != nil {
+		logger.Error("failed generating punch code for b")
+		return nil, nil
+	}
+
+	hdlCtx.initiations[idx].AbAPunchCode = aCode
+	hdlCtx.initiations[idx].AbBPunchCode = bCode
+
+	dReqToA := common.StartChatDRequest{Nickname: hdlCtx.peer.account.nickname, PunchCode: aCode}
+	dReqToB := common.StartChatDRequest{Nickname: startChatCReq.Nickname, PunchCode: bCode}
+
+	err = hdlCtx.sendRequest(dReqToB)
 
 	if err != nil {
-		logger.Debug("chat start B req frame creation failed")
-		return nil, err
+		logger.Errorf("could not send chatstartd to B=%s", hdlCtx.peer.account.nickname)
+		return nil, nil
 	}
 
-	receiverPeerCtx.rToClient <- chatStartBReqF
+	err = receiverPeerCtx.sendRequest(dReqToA)
 
+	if err != nil {
+		logger.Errorf("could not send chatstartd to A=%s", startChatCReq.Nickname)
+		return nil, nil
+	}
+
+	hdlCtx.initiations[idx].Stage = common.InitiationStageD
+
+	hdlCtx.initiationsLock.Unlock()
 	return nil, nil
+}
+
+func generatePunchCode() (string, error) {
+	codeBytes := make([]byte, 8)
+	_, err := rand.Read(codeBytes)
+
+	if err != nil {
+		return "", err
+	}
+
+	for idx, cb := range codeBytes {
+		codeBytes[idx] = 65 + (cb % 26)
+	}
+
+	return string(codeBytes), nil
 }
 
 func (ctx *Context) printDebugInfo() {
@@ -477,7 +524,7 @@ func (ctx *Context) printDebugInfo() {
 	logger.Debug("displaying all initiations:")
 
 	for _, i := range ctx.initiations {
-		logger.Debugf("from %s to %s, stage: %d", i.abBNick, i.abBNick, i.stage)
+		logger.Debugf("from %s to %s, stage: %d", i.AbANick, i.AbBNick, i.Stage)
 	}
 
 	ctx.peersListLock.RUnlock()

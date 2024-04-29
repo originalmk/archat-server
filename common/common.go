@@ -173,10 +173,25 @@ func (StartChatCRequest) ID() int {
 }
 
 type StartChatDRequest struct {
-	Nickname string `json:"nickname"`
-	Accept   bool   `json:"accept"`
+	Nickname  string `json:"nickname"`
+	PunchCode string `json:"punchCode"`
 }
 
 func (StartChatDRequest) ID() int {
 	return StartChatDReqID
 }
+
+type Initiation struct {
+	AbANick      string
+	AbBNick      string
+	Stage        int
+	AbAPunchCode string
+	AbBPunchCode string
+}
+
+const (
+	InitiationStageA = 1
+	InitiationStageB = 2
+	InitiationStageC = 3
+	InitiationStageD = 4
+)
