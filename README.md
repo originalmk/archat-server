@@ -1,4 +1,5 @@
 # 🔀 Archat
+*It is not working application yet, work in progress!*
 Simple P2P server (and client - for testing purposes only, client for end user will be written in NodeJS using Electron, soon).
 
 ## Starting
