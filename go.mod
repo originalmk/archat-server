@@ -1,4 +1,4 @@
-module krzyzanowski.dev/p2pchat
+module krzyzanowski.dev/archat
 
 go 1.21.7
 

@@ -43,6 +43,10 @@ func (rf RFrame) IsResponse() bool {
 	return rf.ID > 128
 }
 
+func (rf RFrame) IsError() bool {
+	return rf.ID > 256
+}
+
 func RequestFrameFrom(req Request) (RFrame, error) {
 	jsonBytes, err := json.Marshal(req)
 
@@ -139,8 +143,10 @@ func (AuthResponse) ID() int {
 	return AuthResID
 }
 
-// "Stateful" requests like these need to have some information identifying what operation they are linked to
-// There may be some errors if two requests are sent by one host to the same other host... may they?
+// "Stateful" requests like these need to have some information identifying
+// what operation they are linked to
+// There may be some errors if two requests are sent by one host to the same
+// other host... may they?
 
 type StartChatARequest struct {
 	Nickname string `json:"nickname"`

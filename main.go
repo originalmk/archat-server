@@ -4,8 +4,8 @@ import (
 	"log"
 	"os"
 
-	"krzyzanowski.dev/p2pchat/client"
-	"krzyzanowski.dev/p2pchat/server"
+	"krzyzanowski.dev/archat/client"
+	"krzyzanowski.dev/archat/server"
 )
 
 func main() {
