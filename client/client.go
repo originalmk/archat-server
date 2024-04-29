@@ -114,6 +114,9 @@ func (cliCtx *Context) handleStartChatB(reqFrame cm.RFrame) (res cm.Response, er
 }
 
 func (cliCtx *Context) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, err error) {
+	cliCtx.initiationsLock.Lock()
+	defer cliCtx.initiationsLock.Unlock()
+
 	startChatDReq, err := cm.RequestFromFrame[cm.StartChatDRequest](reqFrame)
 	if err != nil {
 		return nil, err
@@ -122,6 +125,17 @@ func (cliCtx *Context) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, er
 	logger.Infof("servers wants to be punched, got start chat d request for %s with code %s",
 		startChatDReq.Nickname, startChatDReq.PunchCode)
 	logger.Warn("handleStartChatD not implemented yet")
+
+	idx := slices.IndexFunc(cliCtx.initiations, func(i *cm.Initiation) bool {
+		return i.AbBNick == startChatDReq.Nickname
+	})
+
+	if idx == -1 {
+		logger.Error("there is no initation related to chatstartd's nickname, ignoring")
+		return nil, nil
+	}
+
+	cliCtx.initiations[idx].Stage = cm.InitiationStageD
 
 	return nil, nil
 }
@@ -271,6 +285,9 @@ func sendStartChatA(ctx *Context, nick string) {
 }
 
 func sendStartChatC(ctx *Context, nick string) {
+	ctx.initiationsLock.Lock()
+	defer ctx.initiationsLock.Unlock()
+
 	idx := slices.IndexFunc(ctx.initiations, func(i *cm.Initiation) bool {
 		return i.AbANick == nick
 	})
@@ -286,6 +303,8 @@ func sendStartChatC(ctx *Context, nick string) {
 		logger.Error(err)
 		return
 	}
+
+	ctx.initiations[idx].Stage = cm.InitiationStageC
 
 	logger.Debug("request sent, no wait for response")
 }
