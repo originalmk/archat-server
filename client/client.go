@@ -3,8 +3,9 @@ package client
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
-	"golang.org/x/sync/errgroup"
+	"net"
 	"net/url"
 	"os"
 	"slices"
@@ -13,10 +14,17 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/charmbracelet/log"
 	"github.com/gorilla/websocket"
+	"krzyzanowski.dev/archat/common"
 	cm "krzyzanowski.dev/archat/common"
 )
+
+type InitiationInfo struct {
+	otherSideNick string
+}
 
 type Context struct {
 	conn *websocket.Conn
@@ -25,7 +33,7 @@ type Context struct {
 	resFromServer   chan cm.RFrame
 	reqFromServer   chan cm.RFrame
 	rToServer       chan cm.RFrame
-	initiations     []*cm.Initiation
+	initiations     []InitiationInfo
 	initiationsLock sync.RWMutex
 }
 
@@ -58,6 +66,8 @@ handleNext:
 				res, err = cliCtx.handleStartChatB(reqFrame)
 			} else if reqFrame.ID == cm.StartChatDReqID {
 				res, err = cliCtx.handleStartChatD(reqFrame)
+			} else if reqFrame.ID == cm.StartChatFinishReqID {
+				res, err = cliCtx.handleChatStartFinish(reqFrame)
 			} else {
 				logger.Warn("can't handle it!")
 			}
@@ -103,10 +113,8 @@ func (cliCtx *Context) handleStartChatB(reqFrame cm.RFrame) (res cm.Response, er
 		"decide if you want to accept the chat", startChatBReq.Nickname)
 
 	cliCtx.initiationsLock.Lock()
-	cliCtx.initiations = append(cliCtx.initiations, &cm.Initiation{
-		AbANick: startChatBReq.Nickname,
-		AbBNick: "",
-		Stage:   cm.InitiationStageB,
+	cliCtx.initiations = append(cliCtx.initiations, InitiationInfo{
+		otherSideNick: startChatBReq.Nickname,
 	})
 	cliCtx.initiationsLock.Unlock()
 
@@ -126,16 +134,45 @@ func (cliCtx *Context) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, er
 		startChatDReq.Nickname, startChatDReq.PunchCode)
 	logger.Warn("handleStartChatD not implemented yet")
 
-	idx := slices.IndexFunc(cliCtx.initiations, func(i *cm.Initiation) bool {
-		return i.AbBNick == startChatDReq.Nickname
+	idx := slices.IndexFunc(cliCtx.initiations, func(i InitiationInfo) bool {
+		return i.otherSideNick == startChatDReq.Nickname
 	})
 
 	if idx == -1 {
-		logger.Error("there is no initation related to chatstartd's nickname, ignoring")
+		logger.Error("there is no initation related to chatstartd's nickname, ignoring",
+			"nickname", startChatDReq.Nickname)
 		return nil, nil
 	}
 
-	cliCtx.initiations[idx].Stage = cm.InitiationStageD
+	conn, err := net.Dial("udp", ":8081")
+	if err != nil {
+		logger.Error("error udp dialing for punch", err)
+		return nil, nil
+	}
+
+	enc := json.NewEncoder(conn)
+	err = enc.Encode(cm.PunchRequest{PunchCode: startChatDReq.PunchCode})
+
+	if err != nil {
+		logger.Error("error sending punch request data", "err", err)
+		return nil, nil
+	}
+
+	logger.Debug("punch request sent!")
+
+	return nil, nil
+}
+
+func (ctx *Context) handleChatStartFinish(reqFrame common.RFrame) (res common.Response, err error) {
+	startChatFinishReq, err := common.RequestFromFrame[common.StartChatFinishRequest](reqFrame)
+
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Info("got chat finish info!",
+		"nick", startChatFinishReq.OtherSideNickname,
+		"addr", startChatFinishReq.OtherSideAddress)
 
 	return nil, nil
 }
@@ -288,8 +325,8 @@ func sendStartChatC(ctx *Context, nick string) {
 	ctx.initiationsLock.Lock()
 	defer ctx.initiationsLock.Unlock()
 
-	idx := slices.IndexFunc(ctx.initiations, func(i *cm.Initiation) bool {
-		return i.AbANick == nick
+	idx := slices.IndexFunc(ctx.initiations, func(i InitiationInfo) bool {
+		return i.otherSideNick == nick
 	})
 
 	if idx == -1 {
@@ -303,8 +340,6 @@ func sendStartChatC(ctx *Context, nick string) {
 		logger.Error(err)
 		return
 	}
-
-	ctx.initiations[idx].Stage = cm.InitiationStageC
 
 	logger.Debug("request sent, no wait for response")
 }
@@ -399,12 +434,18 @@ func RunClient() {
 				}
 
 				sendStartChatA(cliCtx, cmdArgs[0])
+
+				cliCtx.initiationsLock.Lock()
+				cliCtx.initiations = append(cliCtx.initiations, InitiationInfo{
+					otherSideNick: cmdArgs[0],
+				})
+				cliCtx.initiationsLock.Unlock()
 			} else if cmdName == "initations" {
 				logger.Info("displaying all initations...")
 
 				cliCtx.initiationsLock.RLock()
 				for _, i := range cliCtx.initiations {
-					logger.Debugf("from %s, stage: %d", i.AbANick, i.Stage)
+					logger.Debugf("with %s", i.otherSideNick)
 				}
 				cliCtx.initiationsLock.RUnlock()
 			} else if cmdName == "startchatc" {

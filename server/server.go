@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -614,6 +615,89 @@ func (ctx *Context) wsapiHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (srvCtx *Context) handleUDP(data []byte, addr net.Addr) {
+	var punchReq common.PunchRequest
+	err := json.Unmarshal(data, &punchReq)
+
+	if err != nil {
+		logger.Error("error unmarshalling punch request", "err", err)
+		return
+	}
+
+	logger.Debugf("got punch request %+v", punchReq)
+
+	srvCtx.initiationsLock.Lock()
+	defer srvCtx.initiationsLock.Unlock()
+
+	idx := slices.IndexFunc(srvCtx.initiations, func(i *common.Initiation) bool {
+		return i.AbAPunchCode == punchReq.PunchCode ||
+			i.AbBPunchCode == punchReq.PunchCode
+	})
+
+	if idx == -1 {
+		logger.Debugf("haven't found initiation for the request")
+		return
+	}
+
+	matchedInitation := srvCtx.initiations[idx]
+	logger.Debugf("matched initiation %+v", matchedInitation)
+
+	if matchedInitation.AbAPunchCode == punchReq.PunchCode {
+		matchedInitation.AbAAddress = addr.String()
+	} else {
+		matchedInitation.AbBAddress = addr.String()
+	}
+
+	if matchedInitation.AbAAddress == "" || matchedInitation.AbBAddress == "" {
+		// does not have two addresses can't do anything yet
+		return
+	}
+
+	logger.Debugf("finished completing initiation %+v", matchedInitation)
+	logger.Debug("now sending peers their addresses")
+
+	srvCtx.peersListLock.Lock()
+	defer srvCtx.peersListLock.Unlock()
+
+	abA, err := srvCtx.getCtxByNick(matchedInitation.AbANick)
+
+	if err != nil {
+		logger.Debug("could not finish punching, abA not found",
+			"err", err)
+		return
+	}
+
+	abB, err := srvCtx.getCtxByNick(matchedInitation.AbBNick)
+
+	if err != nil {
+		logger.Debug("could not finish punching, abB not found",
+			"err", err)
+		return
+	}
+
+	err = abA.sendRequest(common.StartChatFinishRequest{
+		OtherSideNickname: matchedInitation.AbBNick,
+		OtherSideAddress:  matchedInitation.AbBAddress,
+	})
+
+	if err != nil {
+		logger.Debug("could not send start chat finish request to abA, aborting",
+			"err", err)
+		return
+	}
+
+	err = abB.sendRequest(common.StartChatFinishRequest{
+		OtherSideNickname: matchedInitation.AbANick,
+		OtherSideAddress:  matchedInitation.AbAAddress,
+	})
+
+	if err != nil {
+		logger.Debug("could not send start chat finish request to abB, aborting",
+			"err", err)
+		return
+	}
+}
+
 func RunServer() {
 	srvCtx := NewContext()
 
@@ -625,10 +709,30 @@ func RunServer() {
 	}()
 
 	http.HandleFunc("/wsapi", srvCtx.wsapiHandler)
-	logger.Info("Starting server...")
-	err := http.ListenAndServe(":8080", nil)
+	logger.Info("Starting websocket server...")
+	go func() {
+		err := http.ListenAndServe(":8080", nil)
+		if err != nil {
+			logger.Error(err)
+		}
+	}()
 
+	logger.Info("Starting punching server...")
+	listener, err := net.ListenPacket("udp", ":8081")
 	if err != nil {
-		logger.Error(err)
+		logger.Error("could not create listener for punching server", err)
+	}
+
+	for {
+		data := make([]byte, 65536)
+		n, punchAddr, err := listener.ReadFrom(data)
+		if err != nil {
+			logger.Error("error reading from punching server", err)
+			continue
+		}
+
+		data = data[:n]
+		logger.Debugf("got message: %+v", data)
+		srvCtx.handleUDP(data, punchAddr)
 	}
 }

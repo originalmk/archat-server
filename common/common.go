@@ -7,16 +7,17 @@ import (
 // Constants
 
 const (
-	EchoReqID       = 1
-	EchoResID       = 128 + EchoReqID
-	ListPeersReqID  = 2
-	ListPeersResID  = 128 + ListPeersReqID
-	AuthReqID       = 3
-	AuthResID       = 128 + AuthReqID
-	StartChatAReqID = 4
-	StartChatBReqID = 5
-	StartChatCReqID = 6
-	StartChatDReqID = 7
+	EchoReqID            = 1
+	EchoResID            = 128 + EchoReqID
+	ListPeersReqID       = 2
+	ListPeersResID       = 128 + ListPeersReqID
+	AuthReqID            = 3
+	AuthResID            = 128 + AuthReqID
+	StartChatAReqID      = 4
+	StartChatBReqID      = 5
+	StartChatCReqID      = 6
+	StartChatDReqID      = 7
+	StartChatFinishReqID = 8
 )
 
 // Requests & responses subtypes
@@ -181,12 +182,23 @@ func (StartChatDRequest) ID() int {
 	return StartChatDReqID
 }
 
+type StartChatFinishRequest struct {
+	OtherSideNickname string `json:"otherSideNickname"`
+	OtherSideAddress  string `json:"otherSideAddress"`
+}
+
+func (StartChatFinishRequest) ID() int {
+	return StartChatFinishReqID
+}
+
 type Initiation struct {
 	AbANick      string
 	AbBNick      string
 	Stage        int
 	AbAPunchCode string
 	AbBPunchCode string
+	AbAAddress   string
+	AbBAddress   string
 }
 
 const (
@@ -195,3 +207,11 @@ const (
 	InitiationStageC = 3
 	InitiationStageD = 4
 )
+
+type PunchRequest struct {
+	PunchCode string `json:"punchCode"`
+}
+
+type PunchResponse struct {
+	IPAddr int32 `json:"ipAddr"`
+}
