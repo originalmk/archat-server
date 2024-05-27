@@ -215,3 +215,16 @@ type PunchRequest struct {
 type PunchResponse struct {
 	IPAddr int32 `json:"ipAddr"`
 }
+
+type Settings struct {
+	WsapiAddr string
+	UdpAddr   string
+}
+
+type ServerSettings struct {
+	Settings
+}
+
+type ClientSettings struct {
+	Settings
+}

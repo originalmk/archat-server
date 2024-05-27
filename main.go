@@ -1,28 +1,37 @@
 package main
 
 import (
+	"flag"
 	"log"
-	"os"
 
 	"krzyzanowski.dev/archat/client"
+	"krzyzanowski.dev/archat/common"
 	"krzyzanowski.dev/archat/server"
 )
 
 func main() {
-	args := os.Args[1:]
+	wsapiAddr := flag.String("waddr", ":8080", "An IP address of the websocket API endpoint")
+	udpAddr := flag.String("uaddr", ":8081", "An IP address of the UDP hole-punching listener")
+	runType := flag.String("run", "client", "Either one of 'client' or 'server'")
 
-	if len(args) != 1 {
-		log.Fatalln("You must provide only one argument which is type of " +
-			"application: 'server' or 'client'")
+	flag.Parse()
+
+	commonSettings := common.Settings{
+		WsapiAddr: *wsapiAddr,
+		UdpAddr:   *udpAddr,
 	}
 
-	runType := args[0]
-
-	if runType == "client" {
-		client.RunClient()
-	} else if runType == "server" {
-		server.RunServer()
+	if *runType == "client" {
+		settings := common.ClientSettings{
+			Settings: commonSettings,
+		}
+		client.RunClient(settings)
+	} else if *runType == "server" {
+		settings := common.ServerSettings{
+			Settings: commonSettings,
+		}
+		server.RunServer(settings)
 	} else {
-		log.Fatalf("Unknown run type %s\n", runType)
+		log.Fatalf("Unknown run type %s\n", *runType)
 	}
 }

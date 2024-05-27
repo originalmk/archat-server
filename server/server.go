@@ -698,7 +698,7 @@ func (srvCtx *Context) handleUDP(data []byte, addr net.Addr) {
 	}
 }
 
-func RunServer() {
+func RunServer(settings common.ServerSettings) {
 	srvCtx := NewContext()
 
 	go func() {
@@ -709,16 +709,16 @@ func RunServer() {
 	}()
 
 	http.HandleFunc("/wsapi", srvCtx.wsapiHandler)
-	logger.Info("Starting websocket server...")
+	logger.Infof("Starting websocket server on %s...", settings.WsapiAddr)
 	go func() {
-		err := http.ListenAndServe(":8080", nil)
+		err := http.ListenAndServe(settings.WsapiAddr, nil)
 		if err != nil {
 			logger.Error(err)
 		}
 	}()
 
-	logger.Info("Starting punching server...")
-	listener, err := net.ListenPacket("udp", ":8081")
+	logger.Infof("Starting punching server on %s...", settings.UdpAddr)
+	listener, err := net.ListenPacket("udp", settings.UdpAddr)
 	if err != nil {
 		logger.Error("could not create listener for punching server", err)
 	}

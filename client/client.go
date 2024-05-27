@@ -35,14 +35,16 @@ type Context struct {
 	rToServer       chan cm.RFrame
 	initiations     []InitiationInfo
 	initiationsLock sync.RWMutex
+	settings        common.ClientSettings
 }
 
-func NewClientContext(conn *websocket.Conn) *Context {
+func NewClientContext(conn *websocket.Conn, settings common.ClientSettings) *Context {
 	return &Context{
 		conn:          conn,
 		resFromServer: make(chan cm.RFrame),
 		reqFromServer: make(chan cm.RFrame),
 		rToServer:     make(chan cm.RFrame),
+		settings:      settings,
 	}
 }
 
@@ -132,8 +134,6 @@ func (cliCtx *Context) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, er
 
 	logger.Infof("servers wants to be punched, got start chat d request for %s with code %s",
 		startChatDReq.Nickname, startChatDReq.PunchCode)
-	logger.Warn("handleStartChatD not implemented yet")
-
 	idx := slices.IndexFunc(cliCtx.initiations, func(i InitiationInfo) bool {
 		return i.otherSideNick == startChatDReq.Nickname
 	})
@@ -144,7 +144,7 @@ func (cliCtx *Context) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, er
 		return nil, nil
 	}
 
-	conn, err := net.Dial("udp", ":8081")
+	conn, err := net.Dial("udp", cliCtx.settings.UdpAddr)
 	if err != nil {
 		logger.Error("error udp dialing for punch", err)
 		return nil, nil
@@ -247,7 +247,7 @@ func init() {
 }
 
 func sendAuth(ctx *Context, nick, pass string) {
-	logger.Info("trying to authenticate as krzmaciek...")
+	logger.Info("trying to authenticate...", "nick", nick)
 	err := ctx.sendRequest(cm.AuthRequest{Nickname: nick, Password: pass})
 
 	if err != nil {
@@ -344,8 +344,8 @@ func sendStartChatC(ctx *Context, nick string) {
 	logger.Debug("request sent, no wait for response")
 }
 
-func RunClient() {
-	u := url.URL{Scheme: "ws", Host: ":8080", Path: "/wsapi"}
+func RunClient(settings common.ClientSettings) {
+	u := url.URL{Scheme: "ws", Host: settings.WsapiAddr, Path: "/wsapi"}
 	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 
 	if err != nil {
@@ -353,7 +353,7 @@ func RunClient() {
 		return
 	}
 
-	cliCtx := NewClientContext(c)
+	cliCtx := NewClientContext(c, settings)
 	errGroup, syncCtx := errgroup.WithContext(context.Background())
 
 	errGroup.Go(func() error {
