@@ -6,13 +6,19 @@ Simple P2P server (and client - for testing purposes only, client for end user w
 ## Starting
 You can use these commands to start client and/or server:
 
-```
-go run . client
+```bash
+go run . --run client --waddr X.X.X.X:Y --uaddr X.X.X.X:Y
+# for example:
+go run . --run client --waddr krzyzanowski.dev:8080 --uaddr krzyzanowski.dev:8081
 ```
 Note that server should be started **before** running client.
 
-```
-go run . server
+```bash
+go run . --run server --waddr X.X.X.X:Y --uaddr X.X.X.X:Y
+# for example:
+go run . --run server --waddr krzyzanowski.dev:8080 --uaddr krzyzanowski.dev:8081
 ```
 
-For now, address of server is hardcoded in client, and server starts on `localhost:8080`.
+`--waddr` and `--uaddr` options are optional, default values are respectively `:8080` and `:8081` (which is a short form of `localhost:8080` and `localhost:8081`)
+
+`--run` option is mandatory and may take value of either `client` or `server`
