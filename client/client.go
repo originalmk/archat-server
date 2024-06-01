@@ -23,7 +23,8 @@ import (
 )
 
 type InitiationInfo struct {
-	otherSideNick string
+	otherSideNick  string
+	punchLaddrUsed string
 }
 
 type Context struct {
@@ -150,6 +151,7 @@ func (cliCtx *Context) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, er
 		return nil, nil
 	}
 
+	cliCtx.initiations[idx].punchLaddrUsed = conn.LocalAddr().String()
 	enc := json.NewEncoder(conn)
 	err = enc.Encode(cm.PunchRequest{PunchCode: startChatDReq.PunchCode})
 
@@ -159,6 +161,8 @@ func (cliCtx *Context) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, er
 	}
 
 	logger.Debug("punch request sent!")
+	conn.Close()
+	logger.Debug("UDP 'connection' closed", "laddr", conn.LocalAddr())
 
 	return nil, nil
 }
@@ -173,6 +177,62 @@ func (ctx *Context) handleChatStartFinish(reqFrame common.RFrame) (res common.Re
 	logger.Info("got chat finish info!",
 		"nick", startChatFinishReq.OtherSideNickname,
 		"addr", startChatFinishReq.OtherSideAddress)
+
+	ctx.initiationsLock.RLock()
+	defer ctx.initiationsLock.RUnlock()
+
+	idx := slices.IndexFunc(ctx.initiations, func(i InitiationInfo) bool {
+		return i.otherSideNick == startChatFinishReq.OtherSideNickname
+	})
+	relatedInitiation := ctx.initiations[idx]
+
+	logger.Debug("punch laddr used", "laddr", relatedInitiation.punchLaddrUsed)
+
+	logger.Debug("resolving udp addrs")
+	laddr, err := net.ResolveUDPAddr("udp", relatedInitiation.punchLaddrUsed)
+	if err != nil {
+		logger.Error(err)
+		return nil, nil
+	}
+	logger.Debug("resolved laddr", "laddr", laddr.String())
+
+	raddr, err := net.ResolveUDPAddr("udp", startChatFinishReq.OtherSideAddress)
+	if err != nil {
+		logger.Error(err)
+		return nil, nil
+	}
+	logger.Debug("resolved raddr", "raddr", raddr.String())
+
+	time.Sleep(time.Second * 3)
+
+	logger.Debug("dialing udp")
+	conn, err := net.DialUDP("udp", laddr, raddr)
+	if err != nil {
+		logger.Error(err)
+		return nil, nil
+	}
+	log.Debugf("dialed udp L%s<->R%s", laddr.String(), raddr.String())
+
+	for i := 0; i < 3; i++ {
+		log.Debugf("writing Hello to other peer")
+		_, err = conn.Write([]byte("Hello"))
+		if err != nil {
+			logger.Error(err)
+			return nil, nil
+		}
+
+		log.Debug("waiting for message from other peer")
+		bb := make([]byte, 1024)
+		//conn.SetDeadline(time.Now().Add(time.Second * 5))
+		n, _, err := conn.ReadFrom(bb)
+		if err != nil {
+			logger.Error(err)
+			return nil, nil
+		}
+		bb = bb[:n]
+		logger.Debug("got info from other peer", "info", string(bb))
+		time.Sleep(time.Second)
+	}
 
 	return nil, nil
 }
@@ -445,7 +505,7 @@ func RunClient(settings common.ClientSettings) {
 
 				cliCtx.initiationsLock.RLock()
 				for _, i := range cliCtx.initiations {
-					logger.Debugf("with %s", i.otherSideNick)
+					logger.Debugf("with %+v", i)
 				}
 				cliCtx.initiationsLock.RUnlock()
 			} else if cmdName == "startchatc" {
