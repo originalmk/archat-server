@@ -202,9 +202,6 @@ func (ctx *Context) handleChatStartFinish(reqFrame common.RFrame) (res common.Re
 		return nil, nil
 	}
 	logger.Debug("resolved raddr", "raddr", raddr.String())
-
-	time.Sleep(time.Second * 3)
-
 	logger.Debug("dialing udp")
 	conn, err := net.DialUDP("udp", laddr, raddr)
 	if err != nil {
