@@ -559,6 +559,7 @@ func testEcho(hdlCtx *HandlerContext) {
 
 func (ctx *Context) wsapiHandler(w http.ResponseWriter, r *http.Request) {
 	upgrader := websocket.Upgrader{}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 
 	if err != nil {
@@ -674,6 +675,12 @@ func (srvCtx *Context) handleUDP(data []byte, addr net.Addr) {
 			"err", err)
 		return
 	}
+
+	srvCtx.initiations = slices.DeleteFunc(srvCtx.initiations,
+		func(i *common.Initiation) bool {
+			return i.AbAPunchCode == matchedInitation.AbAPunchCode ||
+				i.AbBPunchCode == matchedInitation.AbAPunchCode
+		})
 
 	err = abA.sendRequest(common.StartChatFinishRequest{
 		OtherSideNickname: matchedInitation.AbBNick,
