@@ -679,6 +679,12 @@ func (srvCtx *Context) handleUDP(data []byte, addr net.Addr) {
 		return
 	}
 
+	srvCtx.initiations = slices.DeleteFunc(srvCtx.initiations,
+		func(i *common.Initiation) bool {
+			return i.AbAPunchCode == matchedInitation.AbAPunchCode ||
+				i.AbBPunchCode == matchedInitation.AbAPunchCode
+		})
+
 	err = abA.sendRequest(common.StartChatFinishRequest{
 		OtherSideNickname: matchedInitation.AbBNick,
 		OtherSideAddress:  matchedInitation.AbBAddress,
