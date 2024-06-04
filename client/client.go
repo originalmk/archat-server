@@ -24,7 +24,7 @@ import (
 
 type InitiationInfo struct {
 	otherSideNick  string
-	punchLaddrUsed string
+	punchLaddrUsed *net.UDPAddr
 }
 
 type Context struct {
@@ -145,13 +145,23 @@ func (cliCtx *Context) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, er
 		return nil, nil
 	}
 
-	conn, err := net.Dial("udp", cliCtx.settings.UdpAddr)
+	raddr, err := net.ResolveUDPAddr("udp", cliCtx.settings.UdpAddr)
+	if err != nil {
+		logger.Error(err)
+		return nil, nil
+	}
+
+	conn, err := net.DialUDP("udp", nil, raddr)
+	defer func() {
+		conn.Close()
+		logger.Debug("UDP 'connection' closed", "laddr", conn.LocalAddr())
+	}()
 	if err != nil {
 		logger.Error("error udp dialing for punch", err)
 		return nil, nil
 	}
 
-	cliCtx.initiations[idx].punchLaddrUsed = conn.LocalAddr().String()
+	cliCtx.initiations[idx].punchLaddrUsed, _ = conn.LocalAddr().(*net.UDPAddr)
 	enc := json.NewEncoder(conn)
 	err = enc.Encode(cm.PunchRequest{PunchCode: startChatDReq.PunchCode})
 
@@ -187,15 +197,6 @@ func (ctx *Context) handleChatStartFinish(reqFrame common.RFrame) (res common.Re
 	relatedInitiation := ctx.initiations[idx]
 
 	logger.Debug("punch laddr used", "laddr", relatedInitiation.punchLaddrUsed)
-
-	logger.Debug("resolving udp addrs")
-	laddr, err := net.ResolveUDPAddr("udp", relatedInitiation.punchLaddrUsed)
-	if err != nil {
-		logger.Error(err)
-		return nil, nil
-	}
-	logger.Debug("resolved laddr", "laddr", laddr.String())
-
 	raddr, err := net.ResolveUDPAddr("udp", startChatFinishReq.OtherSideAddress)
 	if err != nil {
 		logger.Error(err)
@@ -203,31 +204,37 @@ func (ctx *Context) handleChatStartFinish(reqFrame common.RFrame) (res common.Re
 	}
 	logger.Debug("resolved raddr", "raddr", raddr.String())
 	logger.Debug("dialing udp")
-	conn, err := net.DialUDP("udp", laddr, raddr)
+
+	conn, err := net.DialUDP("udp", relatedInitiation.punchLaddrUsed, raddr)
+
 	if err != nil {
 		logger.Error(err)
 		return nil, nil
 	}
-	log.Debugf("dialed udp L%s<->R%s", laddr.String(), raddr.String())
 
-	for i := 0; i < 3; i++ {
-		log.Debugf("writing Hello to other peer")
+	logger.Debugf("dialed udp L%s<->R%s", relatedInitiation.punchLaddrUsed.String(), raddr.String())
+
+	go func() {
+		logger.Debug("waiting for message from other peer")
+		bb := make([]byte, 1024)
+		conn.SetDeadline(time.Now().Add(time.Second * 5))
+		n, _, err := conn.ReadFrom(bb)
+		if err != nil {
+			logger.Error(err)
+			return
+		}
+		bb = bb[:n]
+		logger.Debug("got info from other peer", "info", string(bb))
+	}()
+
+	for i := 0; i < 5; i++ {
+		logger.Debugf("writing Hello to other peer")
 		_, err = conn.Write([]byte("Hello"))
 		if err != nil {
 			logger.Error(err)
 			return nil, nil
 		}
 
-		log.Debug("waiting for message from other peer")
-		bb := make([]byte, 1024)
-		//conn.SetDeadline(time.Now().Add(time.Second * 5))
-		n, _, err := conn.ReadFrom(bb)
-		if err != nil {
-			logger.Error(err)
-			return nil, nil
-		}
-		bb = bb[:n]
-		logger.Debug("got info from other peer", "info", string(bb))
 		time.Sleep(time.Second)
 	}
 
