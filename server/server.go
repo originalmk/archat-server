@@ -1,4 +1,4 @@
-// Package server includes functions and structures which allow to run arhcat connection initiating server
+// Package server includes functions and structures which allow to run archat connection initiating server
 package server
 
 import (
@@ -549,7 +549,7 @@ func testEcho(hdlCtx *handlerContext) {
 
 func (ctx *serverContext) wsapiHandler(w http.ResponseWriter, r *http.Request) {
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
+		CheckOrigin: func(_ *http.Request) bool {
 			return true // Allow all origins
 		},
 	}

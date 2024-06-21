@@ -1,3 +1,6 @@
+// Package client includes functions and structures which allow to run archat client which will connects to server
+// This package can be used for testing server during the development, allowing to reuse some common fucntionality
+// from common package
 package client
 
 import (
@@ -22,25 +25,25 @@ import (
 	cm "krzyzanowski.dev/archat/common"
 )
 
-type InitiationInfo struct {
+type initiationInfo struct {
 	otherSideNick  string
 	punchLaddrUsed *net.UDPAddr
 }
 
-type Context struct {
+type clientContext struct {
 	conn *websocket.Conn
 	// Assumption: size of 1 is enough, because first response read will be response for the last request
 	// no need to buffer
 	resFromServer   chan cm.RFrame
 	reqFromServer   chan cm.RFrame
 	rToServer       chan cm.RFrame
-	initiations     []InitiationInfo
+	initiations     []initiationInfo
 	initiationsLock sync.RWMutex
 	settings        common.ClientSettings
 }
 
-func NewClientContext(conn *websocket.Conn, settings common.ClientSettings) *Context {
-	return &Context{
+func newClientContext(conn *websocket.Conn, settings common.ClientSettings) *clientContext {
+	return &clientContext{
 		conn:          conn,
 		resFromServer: make(chan cm.RFrame),
 		reqFromServer: make(chan cm.RFrame),
@@ -49,7 +52,7 @@ func NewClientContext(conn *websocket.Conn, settings common.ClientSettings) *Con
 	}
 }
 
-func (cliCtx *Context) serverHandler(syncCtx context.Context) error {
+func (cliCtx *clientContext) serverHandler(syncCtx context.Context) error {
 	defer logger.Debug("server handler last line...")
 
 handleNext:
@@ -97,7 +100,7 @@ handleNext:
 	}
 }
 
-func (cliCtx *Context) handleEcho(reqFrame cm.RFrame) (res cm.Response, err error) {
+func (cliCtx *clientContext) handleEcho(reqFrame cm.RFrame) (res cm.Response, err error) {
 	echoReq, err := cm.RequestFromFrame[cm.EchoRequest](reqFrame)
 	if err != nil {
 		return nil, err
@@ -106,7 +109,7 @@ func (cliCtx *Context) handleEcho(reqFrame cm.RFrame) (res cm.Response, err erro
 	return cm.EchoResponse(echoReq), nil
 }
 
-func (cliCtx *Context) handleStartChatB(reqFrame cm.RFrame) (res cm.Response, err error) {
+func (cliCtx *clientContext) handleStartChatB(reqFrame cm.RFrame) (res cm.Response, err error) {
 	startChatBReq, err := cm.RequestFromFrame[cm.StartChatBRequest](reqFrame)
 	if err != nil {
 		return nil, err
@@ -116,7 +119,7 @@ func (cliCtx *Context) handleStartChatB(reqFrame cm.RFrame) (res cm.Response, er
 		"decide if you want to accept the chat", startChatBReq.Nickname)
 
 	cliCtx.initiationsLock.Lock()
-	cliCtx.initiations = append(cliCtx.initiations, InitiationInfo{
+	cliCtx.initiations = append(cliCtx.initiations, initiationInfo{
 		otherSideNick: startChatBReq.Nickname,
 	})
 	cliCtx.initiationsLock.Unlock()
@@ -124,7 +127,7 @@ func (cliCtx *Context) handleStartChatB(reqFrame cm.RFrame) (res cm.Response, er
 	return nil, nil
 }
 
-func (cliCtx *Context) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, err error) {
+func (cliCtx *clientContext) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, err error) {
 	cliCtx.initiationsLock.Lock()
 	defer cliCtx.initiationsLock.Unlock()
 
@@ -135,7 +138,7 @@ func (cliCtx *Context) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, er
 
 	logger.Infof("servers wants to be punched, got start chat d request for %s with code %s",
 		startChatDReq.Nickname, startChatDReq.PunchCode)
-	idx := slices.IndexFunc(cliCtx.initiations, func(i InitiationInfo) bool {
+	idx := slices.IndexFunc(cliCtx.initiations, func(i initiationInfo) bool {
 		return i.otherSideNick == startChatDReq.Nickname
 	})
 
@@ -177,7 +180,7 @@ func (cliCtx *Context) handleStartChatD(reqFrame cm.RFrame) (res cm.Response, er
 	return nil, nil
 }
 
-func (ctx *Context) handleChatStartFinish(reqFrame common.RFrame) (res common.Response, err error) {
+func (cliCtx *clientContext) handleChatStartFinish(reqFrame common.RFrame) (res common.Response, err error) {
 	startChatFinishReq, err := common.RequestFromFrame[common.StartChatFinishRequest](reqFrame)
 
 	if err != nil {
@@ -188,13 +191,13 @@ func (ctx *Context) handleChatStartFinish(reqFrame common.RFrame) (res common.Re
 		"nick", startChatFinishReq.OtherSideNickname,
 		"addr", startChatFinishReq.OtherSideAddress)
 
-	ctx.initiationsLock.RLock()
-	defer ctx.initiationsLock.RUnlock()
+	cliCtx.initiationsLock.RLock()
+	defer cliCtx.initiationsLock.RUnlock()
 
-	idx := slices.IndexFunc(ctx.initiations, func(i InitiationInfo) bool {
+	idx := slices.IndexFunc(cliCtx.initiations, func(i initiationInfo) bool {
 		return i.otherSideNick == startChatFinishReq.OtherSideNickname
 	})
-	relatedInitiation := ctx.initiations[idx]
+	relatedInitiation := cliCtx.initiations[idx]
 
 	logger.Debug("punch laddr used", "laddr", relatedInitiation.punchLaddrUsed)
 	raddr, err := net.ResolveUDPAddr("udp", startChatFinishReq.OtherSideAddress)
@@ -217,7 +220,7 @@ func (ctx *Context) handleChatStartFinish(reqFrame common.RFrame) (res common.Re
 	go func() {
 		logger.Debug("waiting for message from other peer")
 		bb := make([]byte, 1024)
-		conn.SetDeadline(time.Now().Add(time.Second * 5))
+		_ = conn.SetDeadline(time.Now().Add(time.Second * 5))
 		n, _, err := conn.ReadFrom(bb)
 		if err != nil {
 			logger.Error(err)
@@ -241,7 +244,7 @@ func (ctx *Context) handleChatStartFinish(reqFrame common.RFrame) (res common.Re
 	return nil, nil
 }
 
-func (cliCtx *Context) serverWriter(syncCtx context.Context) error {
+func (cliCtx *clientContext) serverWriter(syncCtx context.Context) error {
 	defer logger.Debug("server writer last line...")
 
 	for {
@@ -259,7 +262,7 @@ func (cliCtx *Context) serverWriter(syncCtx context.Context) error {
 	}
 }
 
-func (cliCtx *Context) serverReader(syncCtx context.Context) error {
+func (cliCtx *clientContext) serverReader(_ context.Context) error {
 	defer logger.Debug("server reader last line...")
 
 	for {
@@ -282,7 +285,7 @@ func (cliCtx *Context) serverReader(syncCtx context.Context) error {
 	}
 }
 
-func (cliCtx *Context) sendRequest(req cm.Request) error {
+func (cliCtx *clientContext) sendRequest(req cm.Request) error {
 	rf, err := cm.RequestFrameFrom(req)
 	if err != nil {
 		return err
@@ -292,7 +295,7 @@ func (cliCtx *Context) sendRequest(req cm.Request) error {
 	return nil
 }
 
-func (cliCtx *Context) getResponseFrame() cm.RFrame {
+func (cliCtx *clientContext) getResponseFrame() cm.RFrame {
 	return <-cliCtx.resFromServer
 }
 
@@ -310,7 +313,7 @@ func init() {
 	}
 }
 
-func sendAuth(ctx *Context, nick, pass string) {
+func sendAuth(ctx *clientContext, nick, pass string) {
 	logger.Info("trying to authenticate...", "nick", nick)
 	err := ctx.sendRequest(cm.AuthRequest{Nickname: nick, Password: pass})
 
@@ -331,7 +334,7 @@ func sendAuth(ctx *Context, nick, pass string) {
 	logger.Infof("Authenticated?: %t", ar.IsSuccess)
 }
 
-func sendEcho(ctx *Context, echoByte byte) {
+func sendEcho(ctx *clientContext, echoByte byte) {
 	logger.Info("testing echo...", "echoByte", echoByte)
 	err := ctx.sendRequest(cm.EchoRequest{EchoByte: echoByte})
 
@@ -352,7 +355,7 @@ func sendEcho(ctx *Context, echoByte byte) {
 	logger.Info("got response", "echoByte", ereq.EchoByte)
 }
 
-func sendListPeers(ctx *Context) {
+func sendListPeers(ctx *clientContext) {
 	logger.Info("trying to get list of peers...")
 	err := ctx.sendRequest(cm.ListPeersRequest{})
 
@@ -373,7 +376,7 @@ func sendListPeers(ctx *Context) {
 	logger.Info("Got that list", "peersList", lpreq.PeersInfo)
 }
 
-func sendStartChatA(ctx *Context, nick string) {
+func sendStartChatA(ctx *clientContext, nick string) {
 	logger.Info("doing chat start A...")
 	err := ctx.sendRequest(cm.StartChatARequest{Nickname: nick})
 
@@ -385,11 +388,11 @@ func sendStartChatA(ctx *Context, nick string) {
 	logger.Debug("request sent, no wait for response")
 }
 
-func sendStartChatC(ctx *Context, nick string) {
+func sendStartChatC(ctx *clientContext, nick string) {
 	ctx.initiationsLock.Lock()
 	defer ctx.initiationsLock.Unlock()
 
-	idx := slices.IndexFunc(ctx.initiations, func(i InitiationInfo) bool {
+	idx := slices.IndexFunc(ctx.initiations, func(i initiationInfo) bool {
 		return i.otherSideNick == nick
 	})
 
@@ -408,6 +411,8 @@ func sendStartChatC(ctx *Context, nick string) {
 	logger.Debug("request sent, no wait for response")
 }
 
+// RunClient starts client which will connect to the archat server
+// It accepts ClientSettings, which allow to specify server's websocket address and udp socket adddres
 func RunClient(settings common.ClientSettings) {
 	u := url.URL{Scheme: "ws", Host: settings.WsapiAddr, Path: "/wsapi"}
 	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
@@ -417,7 +422,7 @@ func RunClient(settings common.ClientSettings) {
 		return
 	}
 
-	cliCtx := NewClientContext(c, settings)
+	cliCtx := newClientContext(c, settings)
 	errGroup, syncCtx := errgroup.WithContext(context.Background())
 
 	errGroup.Go(func() error {
@@ -500,7 +505,7 @@ func RunClient(settings common.ClientSettings) {
 				sendStartChatA(cliCtx, cmdArgs[0])
 
 				cliCtx.initiationsLock.Lock()
-				cliCtx.initiations = append(cliCtx.initiations, InitiationInfo{
+				cliCtx.initiations = append(cliCtx.initiations, initiationInfo{
 					otherSideNick: cmdArgs[0],
 				})
 				cliCtx.initiationsLock.Unlock()
