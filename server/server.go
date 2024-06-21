@@ -548,7 +548,11 @@ func testEcho(hdlCtx *handlerContext) {
 }
 
 func (ctx *serverContext) wsapiHandler(w http.ResponseWriter, r *http.Request) {
-	upgrader := websocket.Upgrader{}
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true // Allow all origins
+		},
+	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 

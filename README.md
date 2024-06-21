@@ -1,7 +1,8 @@
 # 🔀 Archat
-*It is not working application yet, work in progress!*
+*This application in in alpha stage, some features may not be working correctly or there may be bugs*
 
-Simple P2P server (and client - for testing purposes only, client for end user will be written in NodeJS using Electron, soon).
+Simple P2P server (and client - for testing purposes only, client for end user is written in Electron - you can
+get it [there](https://github.com/DamianLaczynski/archat-client).
 
 ## Starting
 You can use these commands to start client and/or server:
