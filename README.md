@@ -23,3 +23,18 @@ go run . --run server --waddr krzyzanowski.dev:8080 --uaddr krzyzanowski.dev:808
 `--waddr` and `--uaddr` options are optional, default values are respectively `:8080` and `:8081` (which is a short form of `localhost:8080` and `localhost:8081`)
 
 `--run` option is mandatory and may take value of either `client` or `server`
+
+## Running using Docker
+You are provided with Dockerfile inside this repository. You can use it to build your image and run archat-server
+in a container. This image does not allow to run client, because it does not make sense.
+
+0. Enter the top directory of this repository (using cd)
+1. Start with building image
+```bash
+docker build -t archat-server .
+```
+2. Now run a container
+```bash
+docker run -d -p 8080-8081:8080-8081 archat-server
+```
+You may change exposed ports according to your needs, just remember that they need to be open. Also, be sure to build an image after any code update :)
